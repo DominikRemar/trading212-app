@@ -8,7 +8,7 @@ import numpy as np
 # ======================
 KAPITAL_CZK = 5000
 USD_CZK = 23
-RISK = 0.5
+RISK = 1.0
 
 TICKERS = ["AAPL", "TSLA", "NVDA", "AMD", "META", "PLTR", "COIN", "SOFI"]
 
