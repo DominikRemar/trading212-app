@@ -22,7 +22,8 @@ STOCKS = [
 # TOOLS
 # ======================
 def trading212_link(symbol):
-    return f"https://www.trading212.com/search?query={symbol}"
+    return f"https://www.trading212.com/trading-instruments/instruments/search?query={symbol}"
+
 
 def send_telegram(text):
     try:
