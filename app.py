@@ -4,7 +4,7 @@ import requests
 import yfinance as yf
 
 # ======================
-# TELEGRAM – TVÉ ÚDAJE
+# TELEGRAM
 # ======================
 TELEGRAM_TOKEN = "8245860410:AAFK59QMTb7r5cY4VcJzqFt46tTh4y45ufM"
 TELEGRAM_CHAT_ID = "7772237988"
@@ -46,7 +46,7 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ======================
-# MARKET SCAN – ALWAYS 1 STOCK
+# SCAN – ALWAYS 1 STOCK
 # ======================
 def scan_market():
     rows = []
@@ -59,8 +59,8 @@ def scan_market():
 
             close = data["Close"]
             price = float(close.iloc[-1])
-            rsi = compute_rsi(close).iloc[-1]
-            change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
+            rsi = float(compute_rsi(close).iloc[-1])
+            change_30d = float(((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100)
 
             ai_score = (change_30d * 3) + (70 - abs(60 - rsi)) * 2
 
@@ -71,7 +71,6 @@ def scan_market():
                 "30d %": round(change_30d, 2),
                 "AI skóre": int(ai_score)
             })
-
         except:
             pass
 
@@ -80,23 +79,19 @@ def scan_market():
     if df.empty:
         return df
 
-    # vždy vezmeme nejlepší
     best = df.sort_values("AI skóre", ascending=False).head(1).copy()
 
-    score = best.iloc[0]["AI skóre"]
-    change = best.iloc[0]["30d %"]
+    score = float(best.iloc[0]["AI skóre"])
+    change = float(best.iloc[0]["30d %"])
 
     if score >= 60 and change > 3:
-        signal = "KUPIT – SILNÝ SIGNÁL"
-        note = "🟢 Silné AI hodnocení"
+        best["Signál"] = "KUPIT – SILNÝ SIGNÁL"
+        best["Poznámka AI"] = "🟢 Silné AI hodnocení"
     else:
-        signal = "KUPIT – RIZIKO"
-        note = "⚠️ Slabší AI hodnocení – rozhodnutí je na tobě"
+        best["Signál"] = "KUPIT – RIZIKO"
+        best["Poznámka AI"] = "⚠️ Slabší AI hodnocení – rozhodnutí je na tobě"
 
-    best["Signál"] = signal
-    best["Poznámka AI"] = note
     best["Prodat při ($)"] = round(best.iloc[0]["Cena ($)"] * 1.10, 2)
-
     return best
 
 # ======================
@@ -114,32 +109,17 @@ if st.button("🚀 Skenovat trh"):
     if TEST_MODE:
         df = pd.DataFrame([{
             "Akcie": "AAPL",
-            "Cena ($)": 190.0,
-            "RSI": 42.0,
+            "Cena ($)": 190,
+            "RSI": 42,
             "AI skóre": 82,
             "Signál": "KUPIT – SILNÝ SIGNÁL",
             "Poznámka AI": "🟢 Silné AI hodnocení",
-            "Prodat při ($)": 215.0
+            "Prodat při ($)": 215
         }])
-
         link = trading212_link("AAPL")
-
-        send_telegram(
-            f"""🧪 *TEST MODE – BUY SIGNÁL*
-
-📈 Akcie: AAPL
-💰 Cena: $190
-🧠 AI skóre: 82
-🟢 Silné hodnocení
-
-👉 [📈 Otevřít v Trading 212]({link})"""
-        )
-
-        st.success("TEST MODE – OK")
-
+        send_telegram("🧪 TEST MODE OK")
     else:
         df = scan_market()
-
         stock = df.iloc[0]
         link = trading212_link(stock["Akcie"])
 
@@ -148,7 +128,6 @@ if st.button("🚀 Skenovat trh"):
 
 📈 Akcie: {stock['Akcie']}
 💰 Cena: ${stock['Cena ($)']}
-📉 RSI: {stock['RSI']}
 🧠 AI skóre: {stock['AI skóre']}
 📌 {stock['Poznámka AI']}
 
@@ -157,7 +136,5 @@ if st.button("🚀 Skenovat trh"):
 👉 [📈 Otevřít v Trading 212]({link})"""
         )
 
-        st.success("✅ Vybrána nejlepší dostupná akcie")
-
     st.dataframe(df, use_container_width=True)
-    st.markdown(f"👉 **[Otevřít v Trading 212]({trading212_link(df.iloc[0]['Akcie'])})**")
+    st.markdown(f"👉 **[Otevřít v Trading 212]({link})**")
