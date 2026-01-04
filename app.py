@@ -4,30 +4,42 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+from datetime import date
 
-# ======================
+# =====================
 # KONFIGURACE
-# ======================
-INVEST_KC = 5000
+# =====================
+CAPITAL_CZK = 5000
 USD_CZK = 23
-TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "PLTR", "COIN"]
+MAX_POSITIONS = 2
 
-TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+TICKERS = ["AAPL", "MSFT", "NVDA", "PLTR", "COIN", "META", "GOOGL"]
 
-# ======================
+CONF = {
+    "rsi_buy": 40,
+    "rsi_sell": 68,
+    "take_profit": 0.06,
+    "trailing": 0.04
+}
+
+STATE_FILE = "positions.csv"
+RUN_FILE = "last_run.txt"
+
+# =====================
 # TELEGRAM
-# ======================
+# =====================
 def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    requests.post(url, data=data)
+    try:
+        token = st.secrets["TELEGRAM_TOKEN"]
+        chat = st.secrets["TELEGRAM_CHAT_ID"]
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        requests.post(url, data={"chat_id": chat, "text": msg})
+    except:
+        pass
 
-# ======================
+# =====================
 # INDIKÁTORY
-# ======================
+# =====================
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -37,81 +49,127 @@ def rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def ai_score(rsi_val, trend):
+def ai_score(df):
     score = 0
-    if rsi_val < 30:
-        score += 40
-    elif rsi_val < 40:
-        score += 20
-    if trend > 0:
-        score += 30
-    return min(score, 100)
+    score += max(0, (50 - df["RSI"].iloc[-1]) * 2)
+    score += 10 if df["Close"].iloc[-1] > df["Close"].rolling(20).mean().iloc[-1] else 0
+    score += 10 if df["Volume"].iloc[-1] > df["Volume"].mean() else 0
+    return int(score)
 
-# ======================
-# STREAMLIT UI
-# ======================
-st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centered")
+# =====================
+# AUTO RUN (1x DENNĚ)
+# =====================
+def already_ran_today():
+    today = str(date.today())
+    if os.path.exists(RUN_FILE):
+        if open(RUN_FILE).read() == today:
+            return True
+    open(RUN_FILE, "w").write(today)
+    return False
 
-st.title("📈 Trading 212 – AI Polo-automat")
-st.warning("⚠️ Není investiční doporučení")
+# =====================
+# POZICE
+# =====================
+def load_positions():
+    if os.path.exists(STATE_FILE):
+        return pd.read_csv(STATE_FILE)
+    return pd.DataFrame(columns=["ticker", "entry", "peak"])
 
-st.success("✅ Připraveno – klikni na Skenovat trh")
+def save_positions(df):
+    df.to_csv(STATE_FILE, index=False)
 
-if st.button("🚀 Skenovat trh"):
+# =====================
+# BUY SCAN
+# =====================
+def scan_market():
     results = []
 
     for t in TICKERS:
-        try:
-            df = yf.download(t, period="6mo", interval="1d", progress=False)
-            if df.empty:
-                continue
-
-            df["RSI"] = rsi(df["Close"])
-            last = df.iloc[-1]
-
-            if pd.isna(last["RSI"]):
-                continue
-
-            trend = df["Close"].iloc[-1] - df["Close"].iloc[-20]
-            score = ai_score(last["RSI"], trend)
-
-            price_usd = round(last["Close"], 2)
-            price_kc = round(price_usd * USD_CZK)
-            kusy = int(INVEST_KC / price_kc)
-
-            signal = "KUPIT" if score >= 60 else "SLEDOVAT"
-
-            results.append({
-                "Akcie": t,
-                "Cena ($)": price_usd,
-                "Cena (Kč)": price_kc,
-                "RSI": round(last["RSI"], 1),
-                "AI skóre": score,
-                "Signál": signal,
-                "Kusy": kusy
-            })
-        except:
+        df = yf.download(t, period="3mo", interval="1d", progress=False)
+        if df.empty or len(df) < 30:
             continue
 
-    if not results:
-        st.error("❌ Nepodařilo se načíst data")
-    else:
-        df = pd.DataFrame(results).sort_values("AI skóre", ascending=False)
+        df["RSI"] = rsi(df["Close"])
+        last = df.iloc[-1]
 
-        # VŽDY vybereme alespoň 1 akcii
-        best = df.iloc[0]
+        if last["RSI"] < CONF["rsi_buy"]:
+            score = ai_score(df)
+            results.append((t, score, last["Close"], last["RSI"]))
 
-        st.subheader("🔥 Nejlepší dostupná akcie")
-        st.dataframe(pd.DataFrame([best]), use_container_width=True)
+    return sorted(results, key=lambda x: x[1], reverse=True)[:MAX_POSITIONS]
 
-        # Telegram jen při KUPIT
-        if best["Signál"] == "KUPIT":
+# =====================
+# SELL MONITOR
+# =====================
+def check_sell(df_pos):
+    updated = []
+
+    for _, row in df_pos.iterrows():
+        t = row["ticker"]
+        entry = row["entry"]
+        peak = row["peak"]
+
+        df = yf.download(t, period="1mo", interval="1d", progress=False)
+        if df.empty:
+            continue
+
+        df["RSI"] = rsi(df["Close"])
+        price = df["Close"].iloc[-1]
+        r = df["RSI"].iloc[-1]
+
+        peak = max(peak, price)
+
+        reason = None
+        if r > CONF["rsi_sell"]:
+            reason = "RSI"
+        elif price >= entry * (1 + CONF["take_profit"]):
+            reason = "TAKE PROFIT"
+        elif price <= peak * (1 - CONF["trailing"]):
+            reason = "TRAILING STOP"
+
+        if reason:
             send_telegram(
-                f"📈 Trading 212 – AI ALERT\n\n"
-                f"Akcie: {best['Akcie']}\n"
-                f"Signál: {best['Signál']}\n"
-                f"Cena: {best['Cena (Kč)']} Kč\n"
-                f"RSI: {best['RSI']}\n"
-                f"AI skóre: {best['AI skóre']}\n"
-                f"Kusy za {INVEST_KC} Kč: {best['Kusy']}"
+                f"🔴 SELL ALERT\n\n"
+                f"Akcie: {t}\n"
+                f"Důvod: {reason}\n"
+                f"Cena: {int(price*USD_CZK)} Kč\n"
+                f"https://www.trading212.com/trading-instruments/instrument/{t}"
             )
+        else:
+            updated.append({"ticker": t, "entry": entry, "peak": peak})
+
+    save_positions(pd.DataFrame(updated))
+
+# =====================
+# STREAMLIT UI
+# =====================
+st.set_page_config(page_title="Trading 212 AI Bot")
+st.title("🤖 Trading 212 – AI Polo-automat")
+
+if not already_ran_today():
+    positions = load_positions()
+    check_sell(positions)
+
+    if len(positions) < MAX_POSITIONS:
+        picks = scan_market()
+        capital_per_stock = CAPITAL_CZK / MAX_POSITIONS
+
+        for t, score, price, r in picks:
+            if t not in positions["ticker"].values:
+                send_telegram(
+                    f"🟢 BUY SIGNAL\n\n"
+                    f"Akcie: {t}\n"
+                    f"AI skóre: {score}/100\n"
+                    f"Cena: {int(price*USD_CZK)} Kč\n"
+                    f"RSI: {round(r,1)}\n\n"
+                    f"https://www.trading212.com/trading-instruments/instrument/{t}"
+                )
+                positions = positions.append(
+                    {"ticker": t, "entry": price, "peak": price},
+                    ignore_index=True
+                )
+
+        save_positions(positions)
+
+st.success("✅ Bot běží automaticky (1× denně)")
+st.caption("⚠️ Není investiční doporučení. Používáš na vlastní riziko.")
