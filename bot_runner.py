@@ -1,8 +1,8 @@
 import time
+import subprocess
 import requests
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
 
 # ======================
 # TELEGRAM
@@ -36,7 +36,7 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def scan_market():
-    results = []
+    best = None
 
     for symbol in STOCKS:
         try:
@@ -50,52 +50,46 @@ def scan_market():
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
             ai_score = int((change_30d * 3) + (70 - abs(60 - rsi)) * 2)
 
-            results.append({
-                "Akcie": symbol,
-                "Cena": round(price, 2),
-                "RSI": round(rsi, 1),
-                "30d %": round(change_30d, 1),
-                "AI skóre": ai_score,
-                "Cíl": round(price * 1.10, 2)
-            })
+            if ai_score >= 70:
+                best = {
+                    "symbol": symbol,
+                    "price": round(price, 2),
+                    "target": round(price * 1.10, 2),
+                    "stop": round(price * 0.95, 2),
+                    "score": ai_score
+                }
+                break
         except:
             pass
 
-    if not results:
-        return None
-
-    df = pd.DataFrame(results).sort_values("AI skóre", ascending=False)
-    return df.iloc[0]
+    return best
 
 # ======================
-# HLAVNÍ SMYČKA (AUTOMAT)
+# HLAVNÍ CYKLUS
 # ======================
-send_telegram("🤖 Trading 212 AI bot spuštěn")
+send_telegram("🤖 *Trading bot spuštěn – čekám na signál*")
 
 while True:
-    stock = scan_market()
+    signal = scan_market()
 
-    if stock is None:
-        send_telegram("❌ Dnes žádná vhodná akcie")
-    else:
-        strength = "🟢 SILNÁ" if stock["AI skóre"] >= 70 else "🟡 SLABŠÍ – NA RIZIKO"
-
+    if signal:
         send_telegram(
-            f"""📊 *Trading 212 – AI SIGNÁL*
+            f"""🚀 *BUY SIGNÁL*
 
-📈 Akcie: {stock['Akcie']}
-💰 Cena: ${stock['Cena']}
-📉 RSI: {stock['RSI']}
-📊 30d změna: {stock['30d %']} %
-🧠 AI skóre: {stock['AI skóre']}
-⚠️ Hodnocení: {strength}
+📈 Akcie: {signal['symbol']}
+💰 Cena: ${signal['price']}
+🎯 Cíl: ${signal['target']}
+🛑 Stop-loss: ${signal['stop']}
+🧠 AI skóre: {signal['score']}
 
-🎯 Doporučený cíl: ${stock['Cíl']}
-
-📌 V Trading 212 vyhledej ticker: *{stock['Akcie']}*
-📌 Nastav LIMIT SELL na cílovou cenu
+📌 Kup ručně v Trading 212
+📌 Nastav LIMIT SELL a STOP-LOSS
 """
         )
 
-    # ⏰ SPUŠTĚNÍ 1× DENNĚ
-    time.sleep(60 * 60 * 24)
+        # spustí hlídač ceny
+        subprocess.Popen(["python", "price_watcher.py"])
+
+        time.sleep(60 * 60 * 6)  # po signálu pauza 6h
+
+    time.sleep(60 * 15)  # scan každých 15 minut
