@@ -65,7 +65,9 @@ if st.button("🚀 Skenovat trh"):
         sent = sentiment(t)
 
         score = 0
-        if last["RSI"] < 35:
+        rsi = last.get("RSI")
+
+if rsi is not None and rsi < 35:
             score += 2
         if volume_spike:
             score += 2
