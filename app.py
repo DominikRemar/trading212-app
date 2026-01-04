@@ -3,29 +3,31 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
+import os
 
-# =====================
-# NASTAVENÍ
-# =====================
+# ======================
+# KONFIGURACE
+# ======================
 INVEST_KC = 5000
 USD_CZK = 23
-WATCHLIST = ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "TSLA", "AMZN", "COIN"]
+TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "PLTR", "COIN"]
 
-# =====================
+TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+# ======================
 # TELEGRAM
-# =====================
+# ======================
 def send_telegram(msg):
-    try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, data={"chat_id": chat_id, "text": msg})
-    except:
-        pass
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+    requests.post(url, data=data)
 
-# =====================
-# RSI
-# =====================
+# ======================
+# INDIKÁTORY
+# ======================
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -35,26 +37,32 @@ def rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# =====================
+def ai_score(rsi_val, trend):
+    score = 0
+    if rsi_val < 30:
+        score += 40
+    elif rsi_val < 40:
+        score += 20
+    if trend > 0:
+        score += 30
+    return min(score, 100)
+
+# ======================
 # STREAMLIT UI
-# =====================
+# ======================
 st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centered")
 
 st.title("📈 Trading 212 – AI Polo-automat")
 st.warning("⚠️ Není investiční doporučení")
 
-mode = st.selectbox("🧠 Režim", ["SAFE"])
 st.success("✅ Připraveno – klikni na Skenovat trh")
 
-# =====================
-# BUTTON
-# =====================
 if st.button("🚀 Skenovat trh"):
     results = []
 
-    for ticker in WATCHLIST:
+    for t in TICKERS:
         try:
-            df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+            df = yf.download(t, period="6mo", interval="1d", progress=False)
             if df.empty:
                 continue
 
@@ -64,58 +72,46 @@ if st.button("🚀 Skenovat trh"):
             if pd.isna(last["RSI"]):
                 continue
 
-            price_usd = float(last["Close"])
-            price_kc = price_usd * USD_CZK
-            pieces = int(INVEST_KC // price_kc)
+            trend = df["Close"].iloc[-1] - df["Close"].iloc[-20]
+            score = ai_score(last["RSI"], trend)
 
-            # AI skóre (jednoduché, ale funkční)
-            ai_score = 0
-            if last["RSI"] < 35:
-                ai_score += 40
-            if df["Close"].iloc[-1] > df["Close"].rolling(20).mean().iloc[-1]:
-                ai_score += 30
-            if df["Close"].pct_change().iloc[-5:].mean() > 0:
-                ai_score += 30
+            price_usd = round(last["Close"], 2)
+            price_kc = round(price_usd * USD_CZK)
+            kusy = int(INVEST_KC / price_kc)
 
-            signal = "ČEKAT"
-            if last["RSI"] < 30 and ai_score >= 60:
-                signal = "KUPIT"
-            elif last["RSI"] > 70:
-                signal = "PRODAT"
+            signal = "KUPIT" if score >= 60 else "SLEDOVAT"
 
             results.append({
-                "Akcie": ticker,
-                "Cena ($)": round(price_usd, 2),
-                "Cena (Kč)": int(price_kc),
+                "Akcie": t,
+                "Cena ($)": price_usd,
+                "Cena (Kč)": price_kc,
                 "RSI": round(last["RSI"], 1),
-                "AI skóre": ai_score,
+                "AI skóre": score,
                 "Signál": signal,
-                "Kusy": pieces
+                "Kusy": kusy
             })
-
         except:
             continue
 
     if not results:
-        st.error("❌ Žádné vhodné akcie")
+        st.error("❌ Nepodařilo se načíst data")
     else:
-        df_res = pd.DataFrame(results)
+        df = pd.DataFrame(results).sort_values("AI skóre", ascending=False)
 
-        # jen 1 nejsilnější akcie
-        df_res = df_res.sort_values("AI skóre", ascending=False).head(1)
+        # VŽDY vybereme alespoň 1 akcii
+        best = df.iloc[0]
 
-        st.subheader("🔥 Doporučený obchod")
-        st.dataframe(df_res, use_container_width=True)
+        st.subheader("🔥 Nejlepší dostupná akcie")
+        st.dataframe(pd.DataFrame([best]), use_container_width=True)
 
-        row = df_res.iloc[0]
-
-        if row["Signál"] != "ČEKAT":
+        # Telegram jen při KUPIT
+        if best["Signál"] == "KUPIT":
             send_telegram(
-                f"📈 Trading 212 AI ALERT\n\n"
-                f"Akcie: {row['Akcie']}\n"
-                f"Signál: {row['Signál']}\n"
-                f"Cena: {row['Cena (Kč)']} Kč\n"
-                f"RSI: {row['RSI']}\n"
-                f"AI skóre: {row['AI skóre']}\n"
-                f"Kusy za {INVEST_KC} Kč: {row['Kusy']}"
+                f"📈 Trading 212 – AI ALERT\n\n"
+                f"Akcie: {best['Akcie']}\n"
+                f"Signál: {best['Signál']}\n"
+                f"Cena: {best['Cena (Kč)']} Kč\n"
+                f"RSI: {best['RSI']}\n"
+                f"AI skóre: {best['AI skóre']}\n"
+                f"Kusy za {INVEST_KC} Kč: {best['Kusy']}"
             )
