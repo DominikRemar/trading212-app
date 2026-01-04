@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
+from datetime import datetime
 
 # ======================
 # TELEGRAM – TVÉ ÚDAJE
@@ -21,7 +22,6 @@ STOCKS = [
 # TOOLS
 # ======================
 def trading212_link(symbol):
-    # SPRÁVNÝ ODKAZ – vyhledávání (funguje vždy)
     return f"https://www.trading212.com/search?query={symbol}"
 
 def send_telegram(text):
@@ -48,11 +48,10 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ======================
-# SCAN TRHU – VŽDY NAJDE 1 AKCII
+# SCAN
 # ======================
 def scan_market():
-    strong = []
-    fallback = []
+    results = []
 
     for symbol in STOCKS:
         try:
@@ -65,84 +64,88 @@ def scan_market():
             rsi = compute_rsi(close).iloc[-1]
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
 
-            ai_score = (change_30d * 3) + (70 - abs(60 - rsi)) * 2
+            ai_score = int((change_30d * 3) + (70 - abs(60 - rsi)) * 2)
 
-            row = {
+            results.append({
                 "Akcie": symbol,
                 "Cena ($)": round(price, 2),
                 "RSI": round(rsi, 1),
-                "30d %": round(change_30d, 2),
-                "AI skóre": int(ai_score),
-                "Prodat při ($)": round(price * 1.10, 2)
-            }
-
-            if change_30d > 3 and ai_score >= 70:
-                row["Signál"] = "🟢 KUPIT – SILNÝ SIGNÁL"
-                strong.append(row)
-            else:
-                row["Signál"] = "⚠️ SLABŠÍ SIGNÁL – RIZIKO"
-                fallback.append(row)
+                "Změna 30d %": round(change_30d, 1),
+                "AI skóre": ai_score,
+                "Prodat při ($)": round(price * 1.10, 2),
+            })
 
         except:
-            pass
+            continue
 
-    if strong:
-        return pd.DataFrame(strong).sort_values("AI skóre", ascending=False).head(1)
+    if not results:
+        return pd.DataFrame()
 
-    # fallback – vždy aspoň 1 akcie
-    return pd.DataFrame(fallback).sort_values("AI skóre", ascending=False).head(1)
+    df = pd.DataFrame(results)
+
+    # preferuj silné, ale KDYŽ NEJSOU, vezmi nejlepší slabší
+    df = df.sort_values("AI skóre", ascending=False)
+
+    return df.head(1)
 
 # ======================
 # STREAMLIT UI
 # ======================
-st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centered")
+st.set_page_config(page_title="Trading 212 – AI Asistent", layout="centered")
 
-st.title("📈 Trading 212 – AI Polo-automat")
+st.title("📈 Trading 212 – AI Asistent")
 st.warning("⚠️ Není investiční doporučení")
 
-TEST_MODE = st.toggle("🧪 TEST MODE (doporučeno)", value=True)
+TEST_MODE = st.toggle("🧪 TEST MODE", value=False)
 
 if st.button("🚀 Skenovat trh"):
 
     if TEST_MODE:
         df = pd.DataFrame([{
-            "Akcie": "NVDA",
-            "Cena ($)": 188.85,
-            "RSI": 59.3,
-            "30d %": 5.16,
-            "AI skóre": 154,
-            "Signál": "🟢 KUPIT – SILNÝ SIGNÁL",
-            "Prodat při ($)": 207.74
+            "Akcie": "AAPL",
+            "Cena ($)": 190.0,
+            "RSI": 45.0,
+            "Změna 30d %": 4.2,
+            "AI skóre": 78,
+            "Prodat při ($)": 209.0
         }])
-        stock = df.iloc[0]
-
     else:
         df = scan_market()
-        stock = df.iloc[0]
 
+    if df.empty:
+        st.error("❌ Trh dnes nedává ani slabý signál")
+        send_telegram("❌ Dnes žádná vhodná akcie")
+        st.stop()
+
+    stock = df.iloc[0]
     link = trading212_link(stock["Akcie"])
 
-    risk_note = (
-        "🟢 Silné AI hodnocení"
-        if "SILNÝ" in stock["Signál"]
-        else "🟡 Slabší AI hodnocení – rozhodnutí je na tobě"
-    )
+    strength = "🟢 SILNÝ" if stock["AI skóre"] >= 70 else "🟡 SLABŠÍ – NA RIZIKO"
 
     send_telegram(
-        f"""📊 *Trading212 AI – ANALÝZA*
+        f"""📊 *Trading 212 – AI Signál*
 
 📈 Akcie: {stock['Akcie']}
 💰 Cena: ${stock['Cena ($)']}
 📉 RSI: {stock['RSI']}
-📈 30d změna: {stock['30d %']} %
+📊 30d změna: {stock['Změna 30d %']} %
 🧠 AI skóre: {stock['AI skóre']}
-{risk_note}
+⚠️ Hodnocení: {strength}
 
-🎯 Cíl: ${stock['Prodat při ($)']}
+🎯 Doporučený cíl: ${stock['Prodat při ($)']}
 
-👉 [📈 Otevřít v Trading 212]({link})"""
+👉 [Otevřít v Trading 212]({link})
+
+📌 Nastav LIMIT SELL na cílovou cenu
+"""
     )
 
-    st.success("✅ Analýza hotová")
+    st.success("✅ Akcie nalezena")
     st.dataframe(df, use_container_width=True)
     st.markdown(f"👉 **[Otevřít v Trading 212]({link})**")
+
+    # UPOZORNĚNÍ BLÍŽÍCÍ SE CÍL
+    if stock["Cena ($)"] >= stock["Prodat při ($)"] * 0.9:
+        send_telegram(
+            f"⏰ *POZOR!* {stock['Akcie']} je blízko cíle ({stock['Prodat při ($)']}$)"
+        )
