@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-from datetime import datetime
 
 # ======================
 # TELEGRAM – TVÉ ÚDAJE
@@ -11,7 +10,7 @@ TELEGRAM_TOKEN = "8245860410:AAFK59QMTb7r5cY4VcJzqFt46tTh4y45ufM"
 TELEGRAM_CHAT_ID = "7772237988"
 
 # ======================
-# NASTAVENÍ
+# WATCHLIST
 # ======================
 STOCKS = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
@@ -26,9 +25,8 @@ def trading212_link(symbol):
 
 def send_telegram(text):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(
-            url,
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
@@ -48,10 +46,10 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ======================
-# REAL SCAN – FUNKČNÍ
+# MARKET SCAN – ALWAYS 1 STOCK
 # ======================
 def scan_market():
-    candidates = []
+    rows = []
 
     for symbol in STOCKS:
         try:
@@ -62,31 +60,44 @@ def scan_market():
             close = data["Close"]
             price = float(close.iloc[-1])
             rsi = compute_rsi(close).iloc[-1]
-
-            # růst za poslední měsíc
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
 
-            # AI skóre (momentum + zdravé RSI)
             ai_score = (change_30d * 3) + (70 - abs(60 - rsi)) * 2
 
-            if change_30d > 3 and ai_score >= 60:
-                candidates.append({
-                    "Akcie": symbol,
-                    "Cena ($)": round(price, 2),
-                    "RSI": round(rsi, 1),
-                    "AI skóre": int(ai_score),
-                    "Signál": "KUPIT",
-                    "Prodat při ($)": round(price * 1.10, 2)
-                })
+            rows.append({
+                "Akcie": symbol,
+                "Cena ($)": round(price, 2),
+                "RSI": round(rsi, 1),
+                "30d %": round(change_30d, 2),
+                "AI skóre": int(ai_score)
+            })
 
         except:
             pass
 
-    if not candidates:
-        return pd.DataFrame()
+    df = pd.DataFrame(rows)
 
-    df = pd.DataFrame(candidates)
-    return df.sort_values("AI skóre", ascending=False).head(1)
+    if df.empty:
+        return df
+
+    # vždy vezmeme nejlepší
+    best = df.sort_values("AI skóre", ascending=False).head(1).copy()
+
+    score = best.iloc[0]["AI skóre"]
+    change = best.iloc[0]["30d %"]
+
+    if score >= 60 and change > 3:
+        signal = "KUPIT – SILNÝ SIGNÁL"
+        note = "🟢 Silné AI hodnocení"
+    else:
+        signal = "KUPIT – RIZIKO"
+        note = "⚠️ Slabší AI hodnocení – rozhodnutí je na tobě"
+
+    best["Signál"] = signal
+    best["Poznámka AI"] = note
+    best["Prodat při ($)"] = round(best.iloc[0]["Cena ($)"] * 1.10, 2)
+
+    return best
 
 # ======================
 # STREAMLIT UI
@@ -96,7 +107,7 @@ st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centere
 st.title("📈 Trading 212 – AI Polo-automat")
 st.warning("⚠️ Není investiční doporučení")
 
-TEST_MODE = st.toggle("🧪 TEST MODE (doporučeno)", value=True)
+TEST_MODE = st.toggle("🧪 TEST MODE", value=True)
 
 if st.button("🚀 Skenovat trh"):
 
@@ -106,7 +117,8 @@ if st.button("🚀 Skenovat trh"):
             "Cena ($)": 190.0,
             "RSI": 42.0,
             "AI skóre": 82,
-            "Signál": "KUPIT",
+            "Signál": "KUPIT – SILNÝ SIGNÁL",
+            "Poznámka AI": "🟢 Silné AI hodnocení",
             "Prodat při ($)": 215.0
         }])
 
@@ -117,43 +129,35 @@ if st.button("🚀 Skenovat trh"):
 
 📈 Akcie: AAPL
 💰 Cena: $190
-📉 RSI: 42
 🧠 AI skóre: 82
-✅ Signál: KUPIT
-
-🎯 Cíl: $215
+🟢 Silné hodnocení
 
 👉 [📈 Otevřít v Trading 212]({link})"""
         )
 
-        st.success("TEST MODE – vždy nalezena 1 akcie")
+        st.success("TEST MODE – OK")
 
     else:
         df = scan_market()
-
-        if df.empty:
-            st.error("❌ Dnes žádná silná akcie – SAFE režim")
-            send_telegram("❌ Dnes žádná silná akcie – SAFE režim")
-            st.stop()
 
         stock = df.iloc[0]
         link = trading212_link(stock["Akcie"])
 
         send_telegram(
-            f"""📊 *Trading212 AI – BUY SIGNÁL*
+            f"""📊 *Trading212 AI – ANALÝZA*
 
 📈 Akcie: {stock['Akcie']}
 💰 Cena: ${stock['Cena ($)']}
 📉 RSI: {stock['RSI']}
 🧠 AI skóre: {stock['AI skóre']}
-✅ Signál: KUPIT
+📌 {stock['Poznámka AI']}
 
 🎯 Cíl: ${stock['Prodat při ($)']}
 
 👉 [📈 Otevřít v Trading 212]({link})"""
         )
 
-        st.success("✅ Nalezena silná akcie")
+        st.success("✅ Vybrána nejlepší dostupná akcie")
 
     st.dataframe(df, use_container_width=True)
     st.markdown(f"👉 **[Otevřít v Trading 212]({trading212_link(df.iloc[0]['Akcie'])})**")
