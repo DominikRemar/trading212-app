@@ -1,9 +1,5 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import feedparser
-from textblob import TextBlob
-import numpy as np
 
 # =========================
 # NASTAVENÍ
@@ -12,120 +8,128 @@ KAPITAL_EUR = 500
 USD_EUR = 0.92
 RISK_PER_TRADE = 0.05
 
-TRADING212_TICKERS = [
+TICKERS = [
     "AAPL", "TSLA", "NVDA", "AMD", "META",
     "PLTR", "SOFI", "COIN", "NFLX", "INTC"
 ]
 
 # =========================
 st.set_page_config(
-    page_title="Trading 212 Scanner",
+    page_title="Trading 212 – Rychlý výdělek",
     page_icon="📈",
     layout="wide"
 )
 
 st.title("📈 Trading 212 – Rychlý výdělek")
-st.write("Automatický výběr akcií + velikost pozice (kapitál 500 €)")
+st.success("✅ Aplikace připravena. Klikni na **Skenovat trh**")
+
+st.caption("⚠️ Není investiční doporučení. Používáš na vlastní riziko.")
 
 # =========================
 def rsi(close, period=14):
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-
     rs = avg_gain / avg_loss
-    rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val
-
-def sentiment(ticker):
-    feed = feedparser.parse(
-        f"https://news.google.com/rss/search?q={ticker}+stock"
-    )
-    score = 0
-    count = 0
-    for e in feed.entries[:5]:
-        score += TextBlob(e.title).sentiment.polarity
-        count += 1
-    return round(score / count, 2) if count > 0 else 0
+    return 100 - (100 / (1 + rs))
 
 # =========================
 if st.button("🚀 Skenovat trh"):
-    output = []
+    import yfinance as yf
+    import feedparser
+    from textblob import TextBlob
 
-    for t in TRADING212_TICKERS:
-        data = yf.download(t, period="3mo", interval="1d", progress=False)
+    st.info("🔎 Skenuji trh... vydrž pár sekund")
 
-        if data is None or data.empty or len(data) < 30:
+    results = []
+
+    for t in TICKERS:
+        try:
+            data = yf.download(
+                t,
+                period="1mo",
+                interval="1d",
+                progress=False,
+                auto_adjust=True
+            )
+
+            if data.empty or len(data) < 20:
+                continue
+
+            data["RSI"] = rsi(data["Close"])
+            data["EMA20"] = data["Close"].ewm(span=20).mean()
+
+            last = data.iloc[-1]
+            price = float(last["Close"])
+            price_eur = price * USD_EUR
+
+            volume_spike = last["Volume"] > data["Volume"].mean() * 1.5
+
+            # Sentiment (zjednodušený a rychlý)
+            feed = feedparser.parse(
+                f"https://news.google.com/rss/search?q={t}+stock"
+            )
+            sent = sum(
+                TextBlob(e.title).sentiment.polarity
+                for e in feed.entries[:3]
+            )
+
+            score = 0
+            if last["RSI"] < 35:
+                score += 2
+            if volume_spike:
+                score += 2
+            if sent > 0:
+                score += 1
+            if last["Close"] > last["EMA20"]:
+                score += 1
+
+            signal = "HOLD"
+            if score >= 4:
+                signal = "🟢 KOUPIT"
+            elif last["RSI"] > 70 and sent < 0:
+                signal = "🔴 PRODAT"
+
+            stop_loss = price * 0.97
+            take_profit = price * 1.06
+
+            risk_per_share = abs(price - stop_loss) * USD_EUR
+            max_risk = KAPITAL_EUR * RISK_PER_TRADE
+            shares = int(max_risk / risk_per_share) if risk_per_share > 0 else 0
+
+            results.append({
+                "Akcie": t,
+                "Cena (€)": round(price_eur, 2),
+                "RSI": round(last["RSI"], 1),
+                "Objem spike": "ANO" if volume_spike else "NE",
+                "Sentiment": round(sent, 2),
+                "Signál": signal,
+                "Kolik koupit (ks)": shares if signal == "🟢 KOUPIT" else "-",
+                "Take Profit ($)": round(take_profit, 2),
+                "Stop Loss ($)": round(stop_loss, 2)
+            })
+
+        except Exception:
             continue
 
-        data["RSI"] = rsi(data["Close"])
-        data["EMA20"] = data["Close"].ewm(span=20).mean()
+    df = pd.DataFrame(results)
 
-        last = data.iloc[-1]
-
-        rsi_value = last["RSI"]
-        if pd.isna(rsi_value):
-            continue
-
-        price = float(last["Close"])
-        price_eur = price * USD_EUR
-
-        volume_spike = (
-            not pd.isna(last["Volume"]) and
-            last["Volume"] > data["Volume"].mean() * 1.5
-        )
-
-        sent = sentiment(t)
-
-        score = 0
-        if rsi_value < 35:
-            score += 2
-        if volume_spike:
-            score += 2
-        if sent > 0:
-            score += 1
-        if last["Close"] > last["EMA20"]:
-            score += 1
-
-        signal = "HOLD"
-        if score >= 4:
-            signal = "🟢 KOUPIT"
-        elif rsi_value > 70 and sent < 0:
-            signal = "🔴 PRODAT"
-
-        stop_loss_price = price * 0.97
-        take_profit_price = price * 1.06
-
-        risk_per_share = abs(price - stop_loss_price) * USD_EUR
-        max_trade = KAPITAL_EUR * RISK_PER_TRADE
-
-        shares = (
-            int(max_trade / risk_per_share)
-            if risk_per_share > 0 and signal == "🟢 KOUPIT"
-            else "-"
-        )
-
-        output.append({
-            "Akcie": t,
-            "Cena ($)": round(price, 2),
-            "Cena (€)": round(price_eur, 2),
-            "RSI": round(rsi_value, 1),
-            "Sentiment": sent,
-            "Signál": signal,
-            "Kolik koupit (ks)": shares,
-            "Take Profit ($)": round(take_profit_price, 2),
-            "Stop Loss ($)": round(stop_loss_price, 2)
-        })
-
-    df = pd.DataFrame(output)
-
-    if not df.empty:
-        df = df[df["Signál"] != "HOLD"].sort_values("RSI")
-        st.dataframe(df, use_container_width=True)
+    if df.empty:
+        st.warning("❌ Nic vhodného nenalezeno")
     else:
-        st.info("Nenalezeny žádné vhodné příležitosti.")
+        # SELL ALERTY
+        sell_df = df[df["Signál"] == "🔴 PRODAT"]
+        if not sell_df.empty:
+            st.error("🚨 SELL ALERT")
+            st.dataframe(sell_df, use_container_width=True)
 
-st.caption("⚠️ Není investiční doporučení. Používáš na vlastní riziko.")
+        # TOP 3 BUY
+        buy_df = df[df["Signál"] == "🟢 KOUPIT"].head(3)
+
+        if buy_df.empty:
+            st.warning("⚠️ Žádná silná BUY příležitost")
+        else:
+            st.success("🔥 TOP 3 AKCIE NA RYCHLÝ ZISK")
+            st.dataframe(buy_df, use_container_width=True)
