@@ -1,93 +1,80 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import datetime
 import requests
-from datetime import datetime
 
-# ======================
-# KONFIGURACE
-# ======================
-TEST_STOCK = {
-    "symbol": "AAPL",
-    "price": 190.0,
-    "rsi": 42.0,
-    "ai_score": 82,
-    "signal": "KUPIT",
-    "sell_price": 215.0
-}
+# =========================
+# 🔐 TELEGRAM NASTAVENÍ
+# =========================
+TELEGRAM_TOKEN = "TVUJ_TOKEN"
+TELEGRAM_CHAT_ID = "TVUJ_CHAT_ID"
 
-SAFE_CONF = {
-    "rsi_buy": 45,
-    "ai_min": 70
-}
-
-# ======================
-# TELEGRAM
-# ======================
 def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, data={"chat_id": chat_id, "text": msg})
-    except Exception as e:
-        st.warning("Telegram se nepodařilo odeslat")
+        requests.post(url, data=data, timeout=5)
+    except:
+        pass
 
-# ======================
-# TEST MODE
-# ======================
-def run_test_mode():
-    msg = f"""
-🧪 TEST MODE – Ověření funkčnosti
+# =========================
+# 📊 TEST DATA
+# =========================
+def test_stock():
+    return {
+        "Akcie": "AAPL",
+        "Cena ($)": 190.0,
+        "RSI": 42,
+        "AI skóre": 82,
+        "Signál": "KUPIT",
+        "Prodat při ($)": 215.0
+    }
 
-📈 Akcie: {TEST_STOCK['symbol']}
-💵 Cena: ${TEST_STOCK['price']}
-📊 RSI: {TEST_STOCK['rsi']}
-🧠 AI skóre: {TEST_STOCK['ai_score']}
-✅ Signál: {TEST_STOCK['signal']}
+# =========================
+# 📈 REÁLNÝ SCAN (jednoduchý)
+# =========================
+def real_scan():
+    # sem můžeš později připojit Yahoo / Alpha Vantage
+    return None
 
-🎯 Cíl pro prodej: ${TEST_STOCK['sell_price']}
-⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}
-"""
-    send_telegram(msg)
-
-    return pd.DataFrame([{
-        "Akcie": TEST_STOCK["symbol"],
-        "Cena ($)": TEST_STOCK["price"],
-        "RSI": TEST_STOCK["rsi"],
-        "AI skóre": TEST_STOCK["ai_score"],
-        "Signál": TEST_STOCK["signal"],
-        "Prodat při ($)": TEST_STOCK["sell_price"]
-    }])
-
-# ======================
-# REAL MODE (BEZ PÁDŮ)
-# ======================
-def run_real_mode():
-    # záměrně bezpečné – když nejsou data
-    return pd.DataFrame([])
-
-# ======================
-# STREAMLIT UI
-# ======================
+# =========================
+# 🤖 STREAMLIT APP
+# =========================
 st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centered")
 
 st.title("📈 Trading 212 – AI Polo-automat")
-st.warning("Není investiční doporučení")
 
-test_mode = st.toggle("🧪 TEST MODE (doporučeno zapnout)", value=True)
+st.warning("⚠️ Není investiční doporučení")
 
-st.success("Bot běží automaticky (1× denně)")
+TEST_MODE = st.toggle("🧪 TEST MODE (doporučeno zapnout)", value=True)
+
+st.success("✅ Bot běží automaticky (1× denně)")
 
 if st.button("🚀 Skenovat trh"):
-    if test_mode:
-        df = run_test_mode()
+
+    if TEST_MODE:
+        stock = test_stock()
         st.success("TEST MODE – vždy nalezena 1 akcie")
-        st.dataframe(df)
+
     else:
-        df = run_real_mode()
-        if df.empty:
-            send_telegram("❌ Dnes žádná silná akcie – SAFE režim")
-            st.error("Žádná data")
-        else:
-            st.dataframe(df)
+        stock = real_scan()
+
+    if stock is None:
+        st.error("❌ Žádná vhodná akcie")
+    else:
+        df = pd.DataFrame([stock])
+        st.dataframe(df, use_container_width=True)
+
+        msg = f"""🧪 TEST MODE – Ověření funkčnosti
+
+📈 Akcie: {stock['Akcie']}
+💲 Cena: ${stock['Cena ($)']}
+📊 RSI: {stock['RSI']}
+🧠 AI skóre: {stock['AI skóre']}
+✅ Signál: {stock['Signál']}
+
+🎯 Cíl pro prodej: ${stock['Prodat při ($)']}
+⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}
+"""
+        send_telegram(msg)
