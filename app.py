@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+import yfinance as yf
 
 # ======================
 # KONFIGURACE
@@ -12,18 +13,14 @@ TEST_STOCK = {
     "rsi": 42.0,
     "ai_score": 82,
     "signal": "KUPIT",
-    "sell_price": 215.0
-}
-
-SAFE_CONF = {
-    "rsi_buy": 45,
-    "ai_min": 70
+    "sell_price": 215.0,
+    "sell_after_hours": 24
 }
 
 # ======================
 # TRADING 212 LINK
 # ======================
-def trading212_link(symbol: str) -> str:
+def trading212_link(symbol):
     return f"https://www.trading212.com/trading-instruments/instrument-details?instrumentId={symbol}"
 
 # ======================
@@ -47,22 +44,45 @@ def send_telegram(msg):
         st.warning("Telegram se nepodařilo odeslat")
 
 # ======================
-# TEST MODE
+# SESSION STATE
+# ======================
+if "open_trade" not in st.session_state:
+    st.session_state.open_trade = None
+
+# ======================
+# ZÍSKÁNÍ AKTUÁLNÍ CENY
+# ======================
+def get_current_price(symbol):
+    try:
+        data = yf.download(symbol, period="1d", interval="1m", progress=False)
+        return float(data["Close"].iloc[-1])
+    except Exception:
+        return None
+
+# ======================
+# BUY – TEST MODE
 # ======================
 def run_test_mode():
     link = trading212_link(TEST_STOCK["symbol"])
+    sell_time = datetime.now() + timedelta(hours=TEST_STOCK["sell_after_hours"])
+
+    st.session_state.open_trade = {
+        "symbol": TEST_STOCK["symbol"],
+        "sell_price": TEST_STOCK["sell_price"],
+        "sell_time": sell_time
+    }
 
     msg = f"""
-🧪 *TEST MODE – Ověření funkčnosti*
+🧪 *TEST MODE – BUY SIGNÁL*
 
 📈 *Akcie:* {TEST_STOCK['symbol']}
 💵 *Cena:* ${TEST_STOCK['price']}
 📊 *RSI:* {TEST_STOCK['rsi']}
 🧠 *AI skóre:* {TEST_STOCK['ai_score']}
-✅ *Signál:* {TEST_STOCK['signal']}
+✅ *Signál:* KUPIT
 
-🎯 *Cíl pro prodej:* ${TEST_STOCK['sell_price']}
-⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}
+🎯 *Prodat při:* ${TEST_STOCK['sell_price']}
+⏰ *Nejpozději:* {sell_time.strftime('%d.%m.%Y %H:%M')}
 
 👉 [📈 Otevřít v Trading 212]({link})
 """
@@ -73,16 +93,41 @@ def run_test_mode():
         "Cena ($)": TEST_STOCK["price"],
         "RSI": TEST_STOCK["rsi"],
         "AI skóre": TEST_STOCK["ai_score"],
-        "Signál": TEST_STOCK["signal"],
-        "Prodat při ($)": TEST_STOCK["sell_price"],
-        "Trading 212": link
+        "Signál": "KUPIT",
+        "Prodat při ($)": TEST_STOCK["sell_price"]
     }])
 
 # ======================
-# REAL MODE (zatím SAFE)
+# KONTROLA PRODEJE (CENA / ČAS)
 # ======================
-def run_real_mode():
-    return pd.DataFrame([])
+def check_sell_condition():
+    trade = st.session_state.open_trade
+    if not trade:
+        return
+
+    now = datetime.now()
+    current_price = get_current_price(trade["symbol"])
+
+    reason = None
+    if current_price and current_price >= trade["sell_price"]:
+        reason = f"CENA DOSAŽENA (${current_price:.2f})"
+    elif now >= trade["sell_time"]:
+        reason = "VYPRŠEL ČAS"
+
+    if reason:
+        link = trading212_link(trade["symbol"])
+        msg = f"""
+🚨 *JE ČAS PRODAT!*
+
+📉 *Akcie:* {trade['symbol']}
+📌 *Důvod:* {reason}
+🎯 *Cíl:* ${trade['sell_price']}
+
+👉 [📉 Prodat v Trading 212]({link})
+"""
+        send_telegram(msg)
+        st.session_state.open_trade = None
+        st.success("🔔 Odesláno SELL upozornění")
 
 # ======================
 # STREAMLIT UI
@@ -95,24 +140,17 @@ st.set_page_config(
 st.title("📈 Trading 212 – AI Polo-automat")
 st.warning("⚠️ Není investiční doporučení")
 
-test_mode = st.toggle("🧪 TEST MODE (doporučeno zapnout)", value=True)
+test_mode = st.toggle("🧪 TEST MODE (doporučeno)", value=True)
 
-st.success("🤖 Bot běží automaticky (1× denně)")
+# kontrola při každém načtení
+check_sell_condition()
 
 if st.button("🚀 Skenovat trh"):
     if test_mode:
         df = run_test_mode()
-        st.success("TEST MODE – vždy nalezena 1 akcie")
+        st.success("TEST MODE – BUY signál odeslán")
         st.dataframe(df, use_container_width=True)
 
         st.markdown(
             f"👉 **[📈 Otevřít {TEST_STOCK['symbol']} v Trading 212]({trading212_link(TEST_STOCK['symbol'])})**"
         )
-
-    else:
-        df = run_real_mode()
-        if df.empty:
-            send_telegram("❌ Dnes žádná silná akcie – SAFE režim")
-            st.error("Žádná silná akcie dnes nenalezena")
-        else:
-            st.dataframe(df, use_container_width=True)
