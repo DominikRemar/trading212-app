@@ -1,6 +1,5 @@
 streamlit
 yfinance
-feedparser
-textblob
 pandas
 numpy
+requests
