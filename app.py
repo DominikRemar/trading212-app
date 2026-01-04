@@ -1,156 +1,133 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
-from datetime import datetime, timedelta
 import yfinance as yf
+from datetime import datetime, timedelta
 
 # ======================
-# KONFIGURACE
+# TELEGRAM – TVÉ ÚDAJE
 # ======================
-TEST_STOCK = {
-    "symbol": "AAPL",
-    "price": 190.0,
-    "rsi": 42.0,
-    "ai_score": 82,
-    "signal": "KUPIT",
-    "sell_price": 215.0,
-    "sell_after_hours": 24
-}
+TELEGRAM_TOKEN = "8245860410:AAFK59QMTb7r5cY4VcJzqFt46tTh4y45ufM"
+TELEGRAM_CHAT_ID = "7772237988"
 
 # ======================
-# TRADING 212 LINK
+# NASTAVENÍ
+# ======================
+TEST_MODE = st.toggle("🧪 TEST MODE (doporučeno)", value=False)
+
+STOCKS = [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
+    "META", "TSLA", "AMD", "NFLX", "INTC"
+]
+
+RSI_BUY = 50
+AI_MIN = 70
+
+# ======================
+# TOOLS
 # ======================
 def trading212_link(symbol):
     return f"https://www.trading212.com/trading-instruments/instrument-details?instrumentId={symbol}"
 
-# ======================
-# TELEGRAM
-# ======================
-def send_telegram(msg):
-    try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(
-            url,
-            data={
-                "chat_id": chat_id,
-                "text": msg,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True
-            }
-        )
-    except Exception:
-        st.warning("Telegram se nepodařilo odeslat")
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    })
+
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = -delta.clip(upper=0).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 # ======================
-# SESSION STATE
+# REAL SCAN
 # ======================
-if "open_trade" not in st.session_state:
-    st.session_state.open_trade = None
+def scan_market():
+    results = []
 
-# ======================
-# ZÍSKÁNÍ AKTUÁLNÍ CENY
-# ======================
-def get_current_price(symbol):
-    try:
-        data = yf.download(symbol, period="1d", interval="1m", progress=False)
-        return float(data["Close"].iloc[-1])
-    except Exception:
-        return None
+    for symbol in STOCKS:
+        try:
+            data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+            if len(data) < 50:
+                continue
 
-# ======================
-# BUY – TEST MODE
-# ======================
-def run_test_mode():
-    link = trading212_link(TEST_STOCK["symbol"])
-    sell_time = datetime.now() + timedelta(hours=TEST_STOCK["sell_after_hours"])
+            close = data["Close"]
+            rsi = compute_rsi(close).iloc[-1]
+            price = close.iloc[-1]
 
-    st.session_state.open_trade = {
-        "symbol": TEST_STOCK["symbol"],
-        "sell_price": TEST_STOCK["sell_price"],
-        "sell_time": sell_time
-    }
+            ai_score = int(
+                (100 - abs(50 - rsi)) +
+                (price / close.mean()) * 10
+            )
 
-    msg = f"""
-🧪 *TEST MODE – BUY SIGNÁL*
+            if rsi < RSI_BUY and ai_score >= AI_MIN:
+                results.append({
+                    "Akcie": symbol,
+                    "Cena ($)": round(price, 2),
+                    "RSI": round(rsi, 1),
+                    "AI skóre": ai_score,
+                    "Signál": "KUPIT",
+                    "Prodat při ($)": round(price * 1.12, 2)
+                })
+        except:
+            pass
 
-📈 *Akcie:* {TEST_STOCK['symbol']}
-💵 *Cena:* ${TEST_STOCK['price']}
-📊 *RSI:* {TEST_STOCK['rsi']}
-🧠 *AI skóre:* {TEST_STOCK['ai_score']}
-✅ *Signál:* KUPIT
+    if not results:
+        return pd.DataFrame()
 
-🎯 *Prodat při:* ${TEST_STOCK['sell_price']}
-⏰ *Nejpozději:* {sell_time.strftime('%d.%m.%Y %H:%M')}
-
-👉 [📈 Otevřít v Trading 212]({link})
-"""
-    send_telegram(msg)
-
-    return pd.DataFrame([{
-        "Akcie": TEST_STOCK["symbol"],
-        "Cena ($)": TEST_STOCK["price"],
-        "RSI": TEST_STOCK["rsi"],
-        "AI skóre": TEST_STOCK["ai_score"],
-        "Signál": "KUPIT",
-        "Prodat při ($)": TEST_STOCK["sell_price"]
-    }])
-
-# ======================
-# KONTROLA PRODEJE (CENA / ČAS)
-# ======================
-def check_sell_condition():
-    trade = st.session_state.open_trade
-    if not trade:
-        return
-
-    now = datetime.now()
-    current_price = get_current_price(trade["symbol"])
-
-    reason = None
-    if current_price and current_price >= trade["sell_price"]:
-        reason = f"CENA DOSAŽENA (${current_price:.2f})"
-    elif now >= trade["sell_time"]:
-        reason = "VYPRŠEL ČAS"
-
-    if reason:
-        link = trading212_link(trade["symbol"])
-        msg = f"""
-🚨 *JE ČAS PRODAT!*
-
-📉 *Akcie:* {trade['symbol']}
-📌 *Důvod:* {reason}
-🎯 *Cíl:* ${trade['sell_price']}
-
-👉 [📉 Prodat v Trading 212]({link})
-"""
-        send_telegram(msg)
-        st.session_state.open_trade = None
-        st.success("🔔 Odesláno SELL upozornění")
+    df = pd.DataFrame(results)
+    return df.sort_values("AI skóre", ascending=False).head(1)
 
 # ======================
 # STREAMLIT UI
 # ======================
-st.set_page_config(
-    page_title="Trading 212 – AI Polo-automat",
-    layout="centered"
-)
-
+st.set_page_config(page_title="Trading 212 – AI Polo-automat")
 st.title("📈 Trading 212 – AI Polo-automat")
 st.warning("⚠️ Není investiční doporučení")
 
-test_mode = st.toggle("🧪 TEST MODE (doporučeno)", value=True)
-
-# kontrola při každém načtení
-check_sell_condition()
-
 if st.button("🚀 Skenovat trh"):
-    if test_mode:
-        df = run_test_mode()
-        st.success("TEST MODE – BUY signál odeslán")
-        st.dataframe(df, use_container_width=True)
+    if TEST_MODE:
+        df = pd.DataFrame([{
+            "Akcie": "AAPL",
+            "Cena ($)": 190,
+            "RSI": 42,
+            "AI skóre": 82,
+            "Signál": "KUPIT",
+            "Prodat při ($)": 215
+        }])
+        st.success("TEST MODE – vždy 1 akcie")
+    else:
+        df = scan_market()
 
-        st.markdown(
-            f"👉 **[📈 Otevřít {TEST_STOCK['symbol']} v Trading 212]({trading212_link(TEST_STOCK['symbol'])})**"
-        )
+    if df.empty:
+        st.error("❌ Dnes žádná silná akcie – SAFE režim")
+        send_telegram("❌ Dnes žádná silná akcie – SAFE režim")
+    else:
+        stock = df.iloc[0]
+        link = trading212_link(stock["Akcie"])
+
+        msg = f"""
+📊 *Trading212 AI – BUY SIGNÁL*
+
+📈 Akcie: {stock['Akcie']}
+💰 Cena: ${stock['Cena ($)']}
+📉 RSI: {stock['RSI']}
+🧠 AI skóre: {stock['AI skóre']}
+✅ Signál: KUPIT
+
+🎯 Cíl: ${stock['Prodat při ($)']}
+
+👉 [📈 Otevřít v Trading 212]({link})
+"""
+        send_telegram(msg)
+
+        st.success("✅ Nalezena silná akcie")
+        st.dataframe(df, use_container_width=True)
+        st.markdown(f"👉 **[Otevřít v Trading 212]({link})**")
