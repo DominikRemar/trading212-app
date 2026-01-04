@@ -67,14 +67,14 @@ def scan_market():
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
 
             score = 0
-            if 30 <= rsi <= 45:
+            if 30 <= rsi <= 50:
                 score += 40
             if change_30d > 0:
                 score += 30
             if change_30d > 5:
                 score += 20
 
-            if score < 50:
+            if score < 40:
                 continue
 
             results.append({
