@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import requests
 import yfinance as yf
+import requests
+from datetime import datetime
 
 # ======================
 # TELEGRAM
@@ -11,9 +12,8 @@ TELEGRAM_CHAT_ID = "7772237988"
 
 def send_telegram(text):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(
-            url,
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
@@ -29,8 +29,13 @@ def send_telegram(text):
 # NASTAVENÍ
 # ======================
 STOCKS = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AMD","NFLX","INTC"]
-TAKE_PROFIT = 1.10   # +10 %
-STOP_LOSS = 0.95     # -5 %
+BUDGET_CZK = 5000
+
+MODES = {
+    "Konzervativní 🟢": {"tp":1.06, "sl":0.97, "rsi":(35,55)},
+    "Vyvážený 🟡": {"tp":1.10, "sl":0.95, "rsi":(30,60)},
+    "Agresivní 🔴": {"tp":1.15, "sl":0.92, "rsi":(25,70)},
+}
 
 # ======================
 # INDIKÁTORY
@@ -43,55 +48,51 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ======================
-# SCAN TRHU
+# AI SCAN
 # ======================
-def scan_market():
+def scan_market(mode):
     results = []
 
     for symbol in STOCKS:
         try:
-            data = yf.download(symbol, period="1y", interval="1d", progress=False)
-            if len(data) < 250:
+            stock = yf.Ticker(symbol)
+            data = stock.history(period="6mo")
+
+            if len(data) < 60:
                 continue
 
             close = data["Close"]
             price = float(close.iloc[-1])
-
             rsi = compute_rsi(close).iloc[-1]
             ma200 = close.rolling(200).mean().iloc[-1]
-
-            # Trend filtr
-            if price < ma200:
-                continue
-
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
 
-            score = 0
-            if 30 <= rsi <= 50:
-                score += 40
-            if change_30d > 0:
-                score += 30
-            if change_30d > 5:
-                score += 20
+            info = stock.info
+            target = info.get("targetMeanPrice")
+            rec = info.get("recommendationKey")
 
-            if score < 40:
-                continue
+            score = 0
+            if price > ma200: score += 25
+            if mode["rsi"][0] <= rsi <= mode["rsi"][1]: score += 20
+            if change_30d > 0: score += 15
+            if target and target > price: score += 20
+            if rec in ["buy","strong_buy"]: score += 20
+            elif rec == "hold": score += 10
 
             results.append({
                 "Akcie": symbol,
-                "Cena ($)": round(price, 2),
-                "RSI": round(rsi, 1),
-                "30d %": round(change_30d, 1),
+                "Cena": round(price,2),
+                "RSI": round(rsi,1),
+                "30d %": round(change_30d,1),
+                "Target": round(target,2) if target else "N/A",
                 "AI skóre": score,
-                "Take Profit ($)": round(price * TAKE_PROFIT, 2),
-                "Stop Loss ($)": round(price * STOP_LOSS, 2)
+                "TP": round(price * mode["tp"],2),
+                "SL": round(price * mode["sl"],2),
+                "Trailing SL": round(price * (mode["sl"] + 0.02),2)
             })
 
         except:
             continue
-
-    if not results:
-        return pd.DataFrame()
 
     return pd.DataFrame(results).sort_values("AI skóre", ascending=False).head(3)
 
@@ -102,48 +103,47 @@ st.set_page_config("Trading 212 – AI Asistent", layout="centered")
 st.title("📈 Trading 212 – AI Asistent")
 st.warning("⚠️ Není investiční doporučení")
 
+mode_name = st.selectbox("🧠 Vyber obchodní mód", list(MODES.keys()))
+
 if st.button("🚀 Skenovat trh"):
-    df = scan_market()
+    df = scan_market(MODES[mode_name])
 
     if df.empty:
-        st.error("❌ Dnes žádná vhodná akcie")
-        send_telegram("❌ Dnes nebyla nalezena žádná vhodná akcie")
+        st.error("❌ Dnes žádné signály")
+        send_telegram("❌ Dnes žádné vhodné signály")
         st.stop()
 
-    st.success("✅ Nalezeny TOP obchodní příležitosti")
     st.dataframe(df, use_container_width=True)
 
-    # ======================
-    # TELEGRAM ZPRÁVA
-    # ======================
-    msg = "📊 *TRADING 212 – DENNÍ SIGNÁLY*\n"
+    budget_per_trade = int(BUDGET_CZK / len(df))
+    best = df["AI skóre"].max()
+
+    msg = f"📊 *AI SIGNÁLY – {mode_name}*\n"
+    msg += f"📅 {datetime.now().strftime('%d.%m.%Y')}\n"
+    msg += f"💰 Rozpočet: {BUDGET_CZK} Kč\n"
+    msg += f"➡️ Na akcii: {budget_per_trade} Kč\n"
     msg += "━━━━━━━━━━━━━━━━━━\n\n"
 
-    best_score = df["AI skóre"].max()
-
-    for i, row in enumerate(df.itertuples(), start=1):
-        rr = round(
-            (row._6 - row._2) / (row._2 - row._7), 2
-        )
-
-        badge = " ⭐ *BEST*" if row._5 == best_score else ""
-
+    for i,row in enumerate(df.itertuples(),1):
+        badge = " ⭐ *BEST*" if row._6 == best else ""
         msg += (
-            f"*{i}. {row._1}* 📈{badge}\n"
-            f"🟢 *BUY:* `${row._2}`\n"
-            f"🎯 *TAKE PROFIT:* `${row._6}`\n"
-            f"🛑 *STOP LOSS:* `${row._7}`\n"
-            f"📉 RSI: `{row._3}` | 📊 30d: `{row._4}%`\n"
-            f"🧠 Skóre: `{row._5}` | ⚖️ R:R: `{rr}`\n"
+            f"*{i}. {row._1}*{badge}\n"
+            f"🟢 BUY: `${row._2}`\n"
+            f"🛑 STOP: `${row._8}`\n"
+            f"🎯 LIMIT: `${row._7}`\n"
+            f"🔒 Trailing SL: `${row._9}`\n"
+            f"📉 RSI: {row._3} | 📊 30d: {row._4}%\n"
+            f"🧠 Skóre: {row._6}\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
         )
 
     msg += (
-        "📌 *Postup:*\n"
-        "1️⃣ BUY za market cenu\n"
-        "2️⃣ Nastav STOP LOSS\n"
-        "3️⃣ Nastav TAKE PROFIT\n\n"
-        "⚠️ *Není investiční doporučení*"
+        "📌 *Jak obchodovat v Trading 212:*\n"
+        "1️⃣ Nakup Market\n"
+        "2️⃣ Nastav Stop-Loss\n"
+        "3️⃣ Nastav Limit Sell\n"
+        "4️⃣ Při růstu posouvej STOP (Trailing)\n\n"
+        "⚠️ Není investiční doporučení"
     )
 
     send_telegram(msg)
