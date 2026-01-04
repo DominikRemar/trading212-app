@@ -1,53 +1,27 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import requests
 
-# =============================
-# TELEGRAM NASTAVENÍ
-# =============================
-TELEGRAM_TOKEN = "SEM_VLOŽ_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "SEM_VLOŽ_CHAT_ID"
+# =========================
+# NASTAVENÍ
+# =========================
+KAPITAL_CZK = 5000
+USD_CZK = 23
+RISK_PER_TRADE = 0.5  # 50 % kapitálu max na obchod
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    requests.post(url, data=data)
+TICKERS = ["AAPL", "TSLA", "NVDA", "AMD", "META", "PLTR", "COIN", "SOFI"]
 
-# =============================
-# OBECNÉ NASTAVENÍ
-# =============================
-KAPITAL_KC = 5000
-USD_KC = 23
+# =========================
+st.set_page_config(page_title="Trading 212 – AI Polo-automat", page_icon="🤖")
 
-TICKERS = ["AAPL", "TSLA", "NVDA", "AMD", "META", "PLTR", "COIN"]
-
-st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="wide")
 st.title("📈 Trading 212 – AI Polo-automat")
 st.caption("⚠️ Není investiční doporučení")
 
-# =============================
-# REŽIM
-# =============================
-mode = st.selectbox(
-    "🧠 Režim",
-    ["SAFE", "AGRESIVNÍ"]
-)
-
-if mode == "SAFE":
-    STOP_LOSS = 0.03
-    TAKE_PROFIT = 0.06
-else:
-    STOP_LOSS = 0.05
-    TAKE_PROFIT = 0.10
-
-st.success("✅ Připraveno – klikni na Skenovat trh")
-
-# =============================
-# FUNKCE
-# =============================
-def rsi(close, period=14):
-    delta = close.diff()
+# =========================
+def rsi(series, period=14):
+    delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(period).mean()
@@ -55,98 +29,71 @@ def rsi(close, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def ai_score(rsi_value, price, avg_price):
+def ai_score(rsi_value, trend):
     score = 0
     if rsi_value < 30:
-        score += 45
-    elif rsi_value < 35:
-        score += 30
+        score += 50
     elif rsi_value < 40:
-        score += 15
+        score += 30
 
-    if price > avg_price:
-        score += 15
+    if trend:
+        score += 20
 
-    return min(score, 100)
+    return score
 
-# =============================
-# HLAVNÍ LOGIKA
-# =============================
+# =========================
+mode = st.selectbox("🧠 Režim", ["SAFE", "NORMAL"])
+
+st.success("✅ Připraveno – klikni na Skenovat trh")
+
+# =========================
 if st.button("🚀 Skenovat trh"):
-    st.info("🔍 Skenuji trh…")
-    results = []
+    with st.spinner("🔎 Skenuji trh..."):
+        results = []
 
-    for t in TICKERS:
-        data = yf.download(t, period="2mo", interval="1d", progress=False)
-        if data.empty or len(data) < 20:
-            continue
+        for t in TICKERS:
+            data = yf.download(t, period="3mo", progress=False)
+            if len(data) < 30:
+                continue
 
-        data["RSI"] = rsi(data["Close"])
-        last = data.iloc[-1]
+            data["RSI"] = rsi(data["Close"])
+            data["EMA20"] = data["Close"].ewm(span=20).mean()
 
-        score = ai_score(
-            last["RSI"],
-            last["Close"],
-            data["Close"].mean()
-        )
+            last = data.iloc[-1]
 
-        if score >= 60:
-            price_kc = float(last["Close"]) * USD_KC
+            if pd.isna(last["RSI"]):
+                continue
+
+            price_usd = float(last["Close"])
+            price_czk = price_usd * USD_CZK
+
+            trend_up = price_usd > last["EMA20"]
+            score = ai_score(last["RSI"], trend_up)
+
+            signal = "HOLD"
+            if score >= 60:
+                signal = "🟢 KOUPIT"
+            elif last["RSI"] > 70:
+                signal = "🔴 PRODAT"
+
+            invest = KAPITAL_CZK * RISK_PER_TRADE
+            kusy = int(invest / price_czk)
 
             results.append({
                 "Akcie": t,
-                "Cena_KC": round(price_kc, 0),
+                "Cena ($)": round(price_usd, 2),
+                "Cena (Kč)": round(price_czk, 0),
                 "RSI": round(last["RSI"], 1),
-                "AI skóre": score
+                "AI skóre": score,
+                "Signál": signal,
+                "Kusy": kusy if signal == "🟢 KOUPIT" else "-"
             })
 
-    if not results:
-        st.warning("❌ Žádný kvalitní signál (AI filtr)")
-        st.stop()
+        df = pd.DataFrame(results)
+        df = df[df["Signál"] != "HOLD"].sort_values("AI skóre", ascending=False)
 
-    df = pd.DataFrame(results).sort_values("AI skóre", ascending=False).head(2)
-    investice = int(KAPITAL_KC / len(df))
-
-    st.subheader("🔥 AI výběr")
-
-    for _, row in df.iterrows():
-        sl = round(row["Cena_KC"] * (1 - STOP_LOSS), 0)
-        tp = round(row["Cena_KC"] * (1 + TAKE_PROFIT), 0)
-
-        st.markdown(f"""
-### 🟢 {row['Akcie']}
-🤖 **AI skóre:** {row['AI skóre']} / 100  
-💰 **Investuj:** {investice} Kč  
-📉 **Stop-loss:** {sl} Kč  
-📈 **Take-profit:** {tp} Kč  
-
-📲 👉 [Otevřít v Trading 212](trading212://instrument/{row['Akcie']})
-""")
-
-        # SEND BUY ALERT
-        send_telegram(
-            f"🟢 KOUPIT {row['Akcie']}\n"
-            f"AI skóre: {row['AI skóre']}\n"
-            f"Investice: {investice} Kč\n"
-            f"SL: {sl} Kč | TP: {tp} Kč"
-        )
-
-        # =============================
-        # HLÍDÁNÍ PRODEJE
-        # =============================
-        current = st.number_input(
-            f"Aktuální cena {row['Akcie']} (Kč)",
-            value=float(row["Cena_KC"]),
-            key=row["Akcie"]
-        )
-
-        if current <= sl:
-            st.error("🔴 STOP-LOSS → PRODAT")
-            send_telegram(f"🔴 PRODAT {row['Akcie']} – STOP-LOSS")
-        elif current >= tp:
-            st.success("🟢 TAKE-PROFIT → PRODAT")
-            send_telegram(f"🟢 PRODAT {row['Akcie']} – TAKE-PROFIT")
+        if df.empty:
+            st.warning("❌ Nic vhodného nenalezeno")
         else:
-            st.info("⏳ Drž pozici")
-
-st.caption("Používáš na vlastní riziko")
+            st.subheader("🔥 Doporučené akcie")
+            st.dataframe(df, use_container_width=True)
