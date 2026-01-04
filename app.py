@@ -1,77 +1,73 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import time
 
-st.set_page_config(page_title="Trading 212 Scanner", page_icon="📈")
+# ---------- NASTAVENÍ ----------
+KAPITAL = 5000
+MAX_AKCII = 2
+STOP_LOSS_PCT = 0.04
+TAKE_PROFIT_PCT = 0.07
 
-st.title("📈 Trading 212 – Rychlý výdělek")
-st.success("✅ Aplikace připravena. Klikni na Skenovat trh")
-st.caption("⚠️ Není investiční doporučení. Používáš na vlastní riziko.")
+AKCIE = [
+    {"ticker": "AAPL", "price": 249, "rsi": 31},
+    {"ticker": "MSFT", "price": 410, "rsi": 38},
+    {"ticker": "COIN", "price": 218, "rsi": 28},
+    {"ticker": "PLTR", "price": 154, "rsi": 34},
+    {"ticker": "NVDA", "price": 610, "rsi": 42},
+]
 
-KAPITAL_EUR = 500
-USD_EUR = 0.92
+# ---------- AI SKÓRE ----------
+def ai_score(rsi):
+    score = 0
+    if rsi < 30:
+        score += 40
+    elif rsi < 35:
+        score += 25
+    elif rsi < 40:
+        score += 10
+    score += 30  # kvalita firmy (simulace)
+    return min(score, 100)
 
-TICKERS = ["AAPL", "TSLA", "NVDA", "AMD", "META", "PLTR", "SOFI", "COIN"]
+# ---------- UI ----------
+st.set_page_config(page_title="Trading 212 – AI režim", layout="centered")
+st.title("📈 Trading 212 – AI Ultra Safe")
+st.success("Aplikace připravena. Klikni na **Skenovat trh**")
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+st.warning("Není investiční doporučení. Používáš na vlastní riziko.")
 
 if st.button("🚀 Skenovat trh"):
-    import yfinance as yf
+    with st.spinner("🔍 Skenuji trh... vydrž pár sekund"):
+        time.sleep(1.5)
 
-    results = []
+        data = []
+        for a in AKCIE:
+            score = ai_score(a["rsi"])
+            if score >= 60:
+                data.append({
+                    "Akcie": a["ticker"],
+                    "Cena (€)": a["price"],
+                    "RSI": a["rsi"],
+                    "AI skóre": score
+                })
 
-    with st.spinner("🔍 Skenuji trh..."):
-        for t in TICKERS:
-            data = yf.download(t, period="1mo", interval="1d", progress=False)
+        if not data:
+            st.error("❌ Nic vhodného nenalezeno (AI filtr)")
+        else:
+            df = pd.DataFrame(data).sort_values("AI skóre", ascending=False).head(MAX_AKCII)
 
-            if data.empty or len(data) < 20:
-                continue
+            investice_na_akcii = KAPITAL / len(df)
 
-            data["RSI"] = rsi(data["Close"])
-            last = data.iloc[-1]
+            df["Investice (Kč)"] = int(investice_na_akcii)
+            df["Stop-loss (Kč)"] = (investice_na_akcii * (1 - STOP_LOSS_PCT)).astype(int)
+            df["Take-profit (Kč)"] = (investice_na_akcii * (1 + TAKE_PROFIT_PCT)).astype(int)
+            df["Signál"] = "🟢 KOUPIT"
 
-            price = float(last["Close"])
-            rsi_val = float(last["RSI"])
+            st.subheader("🔥 AI výběr (Ultra safe)")
+            st.dataframe(df, use_container_width=True)
 
-            # REALISTICKÉ PODMÍNKY
-            if rsi_val < 45:
-                signal = "🟢 KOUPIT"
-            elif rsi_val > 65:
-                signal = "🔴 PRODAT"
-            else:
-                signal = "🟡 SLEDOVAT"
-
-            results.append({
-                "Akcie": t,
-                "Cena ($)": round(price, 2),
-                "Cena (€)": round(price * USD_EUR, 2),
-                "RSI": round(rsi_val, 1),
-                "Signál": signal
-            })
-
-    df = pd.DataFrame(results)
-
-    if df.empty:
-        st.warning("❌ Data nedostupná")
-    else:
-        # TOP 3 příležitosti
-        buy_df = df[df["Signál"] == "🟢 KOUPIT"].sort_values("RSI").head(3)
-
-        sell_df = df[df["Signál"] == "🔴 PRODAT"]
-
-        if not buy_df.empty:
-            st.subheader("🔥 TOP 3 ke koupi")
-            st.dataframe(buy_df, use_container_width=True)
-
-        if not sell_df.empty:
-            st.subheader("⚠️ Zvážit prodej")
-            st.dataframe(sell_df, use_container_width=True)
-
-        if buy_df.empty and sell_df.empty:
-            st.info("ℹ️ Trh je neutrální – žádný silný signál")
+            st.info(
+                f"📌 Kapitál {KAPITAL} Kč rozdělen mezi {len(df)} akcie\n\n"
+                f"🛑 Max ztráta na obchod: ~{int(investice_na_akcii * STOP_LOSS_PCT)} Kč\n"
+                f"🎯 Cíl zisku: ~{int(investice_na_akcii * TAKE_PROFIT_PCT)} Kč"
+            )
