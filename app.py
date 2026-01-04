@@ -109,8 +109,8 @@ if st.button("🚀 Skenovat trh"):
     df = scan_market(MODES[mode_name])
 
     if df.empty:
-        st.error("❌ Dnes žádné signály")
-        send_telegram("❌ Dnes žádné vhodné signály")
+        st.error("❌ Dnes žádné vhodné akcie")
+        send_telegram("❌ Dnes žádné vhodné akcie")
         st.stop()
 
     st.dataframe(df, use_container_width=True)
@@ -118,32 +118,37 @@ if st.button("🚀 Skenovat trh"):
     budget_per_trade = int(BUDGET_CZK / len(df))
     best = df["AI skóre"].max()
 
-    msg = f"📊 *AI SIGNÁLY – {mode_name}*\n"
-    msg += f"📅 {datetime.now().strftime('%d.%m.%Y')}\n"
-    msg += f"💰 Rozpočet: {BUDGET_CZK} Kč\n"
-    msg += f"➡️ Na akcii: {budget_per_trade} Kč\n"
-    msg += "━━━━━━━━━━━━━━━━━━\n\n"
+    msg = (
+        f"📊 *AI SIGNÁLY – {mode_name}*\n"
+        f"📅 {datetime.now().strftime('%d.%m.%Y')}\n"
+        f"💰 Rozpočet: {BUDGET_CZK} Kč\n"
+        f"➡️ Na akcii: {budget_per_trade} Kč\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+    )
 
-    for i,row in enumerate(df.itertuples(),1):
-        badge = " ⭐ *BEST*" if row._6 == best else ""
+    for i, row in df.iterrows():
+        badge = " ⭐ *BEST*" if row["AI skóre"] == best else ""
+
         msg += (
-            f"*{i}. {row._1}*{badge}\n"
-            f"🟢 BUY: `${row._2}`\n"
-            f"🛑 STOP: `${row._8}`\n"
-            f"🎯 LIMIT: `${row._7}`\n"
-            f"🔒 Trailing SL: `${row._9}`\n"
-            f"📉 RSI: {row._3} | 📊 30d: {row._4}%\n"
-            f"🧠 Skóre: {row._6}\n"
+            f"*{i+1}. {row['Akcie']}*{badge}\n"
+            f"🟢 BUY: `${row['Cena']}`\n"
+            f"🛑 STOP: `${row['SL']}`\n"
+            f"🎯 LIMIT: `${row['TP']}`\n"
+            f"🔒 Trailing SL: `${row['Trailing SL']}`\n"
+            f"📉 RSI: {row['RSI']} | 📊 30d: {row['30d %']}%\n"
+            f"🎯 Target analytiků: {row['Target']}\n"
+            f"🧠 Skóre: {row['AI skóre']}\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
         )
 
     msg += (
         "📌 *Jak obchodovat v Trading 212:*\n"
-        "1️⃣ Nakup Market\n"
-        "2️⃣ Nastav Stop-Loss\n"
-        "3️⃣ Nastav Limit Sell\n"
+        "1️⃣ Nakup MARKET\n"
+        "2️⃣ Nastav STOP-LOSS\n"
+        "3️⃣ Nastav LIMIT SELL\n"
         "4️⃣ Při růstu posouvej STOP (Trailing)\n\n"
         "⚠️ Není investiční doporučení"
     )
 
-    send_telegram(msg)
+    if msg.strip():
+        send_telegram(msg)
