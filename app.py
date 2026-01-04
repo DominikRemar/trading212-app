@@ -3,105 +3,112 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime
+import os
 
-# =========================
+# =====================
 # KONFIGURACE
-# =========================
-CONF = {
-    "tickers": ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "TSLA", "AMZN", "COIN"],
-    "rsi_buy": 30,
-    "rsi_sell": 70,
-    "ai_min_score": 60
-}
+# =====================
+CAPITAL_CZK = 5000
+USD_CZK = 23
+RSI_BUY = 40
 
-# =========================
+TICKERS = [
+    "AAPL", "MSFT", "NVDA", "META", "GOOGL",
+    "AMZN", "TSLA", "PLTR", "COIN"
+]
+
+# =====================
 # TELEGRAM
-# =========================
-def send_telegram(msg):
-    try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": msg})
-    except Exception as e:
-        st.warning(f"Telegram chyba: {e}")
+# =====================
+TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 
-# =========================
+def send_telegram(msg):
+    if not TG_TOKEN or not TG_CHAT:
+        return
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TG_CHAT, "text": msg})
+
+# =====================
 # RSI
-# =========================
-def compute_rsi(series, period=14):
+# =====================
+def rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# =========================
-# SKEN TRHU
-# =========================
+# =====================
+# SCAN
+# =====================
 def scan_market():
-    picks = []
+    best = None
+    best_score = -999
 
-    for ticker in CONF["tickers"]:
-        try:
-            df = yf.download(ticker, period="6mo", interval="1d", progress=False)
-
-            if df.empty or "Close" not in df:
-                continue
-
-            df["RSI"] = compute_rsi(df["Close"])
-            last = df.iloc[-1]
-
-            # OCHRANA PROTI NaN
-            if pd.isna(last["RSI"]):
-                continue
-
-            ai_score = int(100 - abs(last["RSI"] - 30))
-
-            if last["RSI"] < CONF["rsi_buy"] and ai_score >= CONF["ai_min_score"]:
-                price_usd = float(last["Close"])
-                price_czk = price_usd * 23
-
-                picks.append({
-                    "Akcie": ticker,
-                    "Cena ($)": round(price_usd, 2),
-                    "Cena (Kč)": round(price_czk),
-                    "RSI": round(last["RSI"], 1),
-                    "AI skóre": ai_score,
-                    "Signál": "🟢 KOUPIT"
-                })
-
-        except Exception:
+    for t in TICKERS:
+        df = yf.download(t, period="3mo", interval="1d", progress=False)
+        if df.empty or len(df) < 30:
             continue
 
-    return pd.DataFrame(picks)
+        df["RSI"] = rsi(df["Close"])
+        last = df.iloc[-1]
 
-# =========================
-# STREAMLIT UI
-# =========================
+        if np.isnan(last["RSI"]):
+            continue
+
+        trend = last["Close"] > df["Close"].rolling(20).mean().iloc[-1]
+        score = (50 - last["RSI"]) + (10 if trend else 0)
+
+        if score > best_score:
+            best_score = score
+            best = {
+                "ticker": t,
+                "price_usd": round(last["Close"], 2),
+                "price_czk": int(last["Close"] * USD_CZK),
+                "rsi": round(last["RSI"], 1),
+                "score": int(score)
+            }
+
+    return best
+
+# =====================
+# UI
+# =====================
 st.set_page_config(page_title="Trading 212 – AI Polo-automat", layout="centered")
-
 st.title("🤖 Trading 212 – AI Polo-automat")
-st.warning("⚠️ Není investiční doporučení")
+st.warning("Není investiční doporučení")
 
-st.success("✅ Bot běží automaticky (1× denně)")
-
+st.success("Bot běží automaticky (1× denně)")
 if st.button("🚀 Skenovat trh"):
-    with st.spinner("Skenuji trh..."):
-        df = scan_market()
+    pick = scan_market()
 
-    if df.empty:
-        st.error("❌ Žádné vhodné akcie")
+    if pick is None:
+        st.error("Chyba dat – zkus později")
     else:
-        st.subheader("🔥 Doporučené obchody")
+        kusy = CAPITAL_CZK // pick["price_czk"]
+
+        df = pd.DataFrame([{
+            "Akcie": pick["ticker"],
+            "Cena ($)": pick["price_usd"],
+            "Cena (Kč)": pick["price_czk"],
+            "RSI": pick["rsi"],
+            "AI skóre": pick["score"],
+            "Kusy": kusy,
+            "Signál": "KOUPIT" if pick["rsi"] < RSI_BUY else "SLEDOVAT"
+        }])
+
+        st.subheader("🔥 Nejlepší akcie dne")
         st.dataframe(df, use_container_width=True)
 
-        for _, row in df.iterrows():
-            send_telegram(
-                f"🟢 BUY SIGNAL\n\n"
-                f"Akcie: {row['Akcie']}\n"
-                f"Cena: {row['Cena ($)']} USD\n"
-                f"RSI: {row['RSI']}\n"
-                f"AI skóre: {row['AI skóre']}"
-            )
+        msg = (
+            f"📊 Trading 212 – signál\n"
+            f"Akcie: {pick['ticker']}\n"
+            f"Cena: {pick['price_czk']} Kč\n"
+            f"RSI: {pick['rsi']}\n"
+            f"Kusy: {kusy}\n"
+            f"Signál: {'KOUPIT' if pick['rsi'] < RSI_BUY else 'SLEDOVAT'}"
+        )
+        send_telegram(msg)
