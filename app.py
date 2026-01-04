@@ -1,73 +1,118 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import numpy as np
-import time
 
-# ---------- NASTAVENÍ ----------
-KAPITAL = 5000
-MAX_AKCII = 2
-STOP_LOSS_PCT = 0.04
-TAKE_PROFIT_PCT = 0.07
+# =============================
+# ZÁKLADNÍ NASTAVENÍ
+# =============================
+KAPITAL_KC = 5000
+USD_KC = 23
 
-AKCIE = [
-    {"ticker": "AAPL", "price": 249, "rsi": 31},
-    {"ticker": "MSFT", "price": 410, "rsi": 38},
-    {"ticker": "COIN", "price": 218, "rsi": 28},
-    {"ticker": "PLTR", "price": 154, "rsi": 34},
-    {"ticker": "NVDA", "price": 610, "rsi": 42},
-]
+TICKERS = ["AAPL", "TSLA", "NVDA", "AMD", "META", "PLTR", "COIN"]
 
-# ---------- AI SKÓRE ----------
-def ai_score(rsi):
-    score = 0
-    if rsi < 30:
-        score += 40
-    elif rsi < 35:
-        score += 25
-    elif rsi < 40:
-        score += 10
-    score += 30  # kvalita firmy (simulace)
-    return min(score, 100)
+st.set_page_config(page_title="Trading 212 Polo-automat", layout="wide")
+st.title("📈 Trading 212 – Polo-automat")
+st.caption("⚠️ Není investiční doporučení")
 
-# ---------- UI ----------
-st.set_page_config(page_title="Trading 212 – AI režim", layout="centered")
-st.title("📈 Trading 212 – AI Ultra Safe")
-st.success("Aplikace připravena. Klikni na **Skenovat trh**")
+# =============================
+# REŽIM
+# =============================
+mode = st.selectbox(
+    "🧠 Zvol režim",
+    ["SAFE (nižší riziko)", "AGRESIVNÍ (rychlé obchody)"]
+)
 
-st.warning("Není investiční doporučení. Používáš na vlastní riziko.")
+if "SAFE" in mode:
+    STOP_LOSS = 0.03
+    TAKE_PROFIT = 0.06
+else:
+    STOP_LOSS = 0.05
+    TAKE_PROFIT = 0.10
 
+st.success("✅ Aplikace připravena – klikni na Skenovat trh")
+
+# =============================
+# FUNKCE
+# =============================
+def rsi(close, period=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = gain.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# =============================
+# HLAVNÍ LOGIKA
+# =============================
 if st.button("🚀 Skenovat trh"):
-    with st.spinner("🔍 Skenuji trh... vydrž pár sekund"):
-        time.sleep(1.5)
+    st.info("🔍 Skenuji trh…")
+    results = []
 
-        data = []
-        for a in AKCIE:
-            score = ai_score(a["rsi"])
-            if score >= 60:
-                data.append({
-                    "Akcie": a["ticker"],
-                    "Cena (€)": a["price"],
-                    "RSI": a["rsi"],
-                    "AI skóre": score
-                })
+    for t in TICKERS:
+        data = yf.download(t, period="2mo", interval="1d", progress=False)
+        if data.empty or len(data) < 20:
+            continue
 
-        if not data:
-            st.error("❌ Nic vhodného nenalezeno (AI filtr)")
+        data["RSI"] = rsi(data["Close"])
+        last = data.iloc[-1]
+
+        # Jednoduchá AI logika
+        score = 0
+        if last["RSI"] < 35:
+            score += 2
+        if last["Close"] > data["Close"].mean():
+            score += 1
+
+        if score >= 2:
+            price_usd = float(last["Close"])
+            price_kc = price_usd * USD_KC
+
+            results.append({
+                "Akcie": t,
+                "Cena_KC": round(price_kc, 0),
+                "RSI": round(last["RSI"], 1),
+                "Score": score
+            })
+
+    if not results:
+        st.error("❌ Teď není bezpečný vstup – čekej")
+        st.stop()
+
+    df = pd.DataFrame(results).sort_values("RSI").head(2)
+    investice = int(KAPITAL_KC / len(df))
+
+    st.subheader("🔥 Doporučené akcie")
+
+    for _, row in df.iterrows():
+        sl = round(row["Cena_KC"] * (1 - STOP_LOSS), 0)
+        tp = round(row["Cena_KC"] * (1 + TAKE_PROFIT), 0)
+
+        st.markdown(f"""
+### 🟢 {row['Akcie']}
+💰 **Investuj:** {investice} Kč  
+📉 **Stop-loss:** {sl} Kč  
+📈 **Take-profit:** {tp} Kč  
+
+📲 **Trading 212:**  
+👉 [Otevřít v Trading 212](trading212://instrument/{row['Akcie']})
+""")
+
+        # =============================
+        # ALERT – HLÍDÁNÍ PRODEJE
+        # =============================
+        current = st.number_input(
+            f"Aktuální cena {row['Akcie']} (Kč)",
+            value=float(row["Cena_KC"]),
+            key=row["Akcie"]
+        )
+
+        if current <= sl:
+            st.error("🔴 STOP-LOSS ZASAŽEN → PRODAT IHNED")
+        elif current >= tp:
+            st.success("🟢 TAKE-PROFIT → PRODAT A ZAMKNOUT ZISK")
         else:
-            df = pd.DataFrame(data).sort_values("AI skóre", ascending=False).head(MAX_AKCII)
+            st.info("⏳ Drž pozici – žádný signál k prodeji")
 
-            investice_na_akcii = KAPITAL / len(df)
-
-            df["Investice (Kč)"] = int(investice_na_akcii)
-            df["Stop-loss (Kč)"] = (investice_na_akcii * (1 - STOP_LOSS_PCT)).astype(int)
-            df["Take-profit (Kč)"] = (investice_na_akcii * (1 + TAKE_PROFIT_PCT)).astype(int)
-            df["Signál"] = "🟢 KOUPIT"
-
-            st.subheader("🔥 AI výběr (Ultra safe)")
-            st.dataframe(df, use_container_width=True)
-
-            st.info(
-                f"📌 Kapitál {KAPITAL} Kč rozdělen mezi {len(df)} akcie\n\n"
-                f"🛑 Max ztráta na obchod: ~{int(investice_na_akcii * STOP_LOSS_PCT)} Kč\n"
-                f"🎯 Cíl zisku: ~{int(investice_na_akcii * TAKE_PROFIT_PCT)} Kč"
-            )
+st.caption("Používáš na vlastní riziko")
