@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 
 # ======================
@@ -26,7 +26,7 @@ def send_telegram(text):
         pass
 
 # ======================
-# EVENT MAP – LEVEL 4
+# EVENT MAP (LEVEL 4.5)
 # ======================
 EVENT_MAP = {
     "venezuela": {
@@ -52,7 +52,7 @@ EVENT_MAP = {
 }
 
 # ======================
-# NEWS FETCH (STABLE)
+# NEWS FETCH
 # ======================
 def fetch_news():
     url = "https://newsapi.org/v2/top-headlines"
@@ -68,23 +68,23 @@ def fetch_news():
         return []
 
 # ======================
-# TREND CONFIRMATION
+# TREND CONFIRMATION (MÍRNĚJŠÍ)
 # ======================
 def trend_ok(symbol):
     try:
-        data = yf.Ticker(symbol).history(period="3mo")
-        if len(data) < 30:
-            return False
+        data = yf.Ticker(symbol).history(period="2mo")
+        if len(data) < 20:
+            return True
         ma20 = data["Close"].rolling(20).mean().iloc[-1]
         price = data["Close"].iloc[-1]
-        return price > ma20
+        return price >= ma20 * 0.98  # povolí i early pohyb
     except:
-        return False
+        return True
 
 # ======================
-# LEVEL 4 EVENT SCAN
+# LEVEL 4.5 SCAN
 # ======================
-def level4_scan():
+def level45_scan():
     news = fetch_news()
     hits = []
 
@@ -118,36 +118,38 @@ def level4_scan():
     )
 
     result["Confidence %"] = (result["Skóre"] / result["Skóre"].max() * 100).round(1)
-    return result[result["Skóre"] >= 150].head(3)
+
+    # 🔓 ODEMKČENO – EARLY EVENTS
+    return result[result["Skóre"] >= 80].head(5)
 
 # ======================
 # STREAMLIT UI
 # ======================
-st.set_page_config("🔥 LEVEL 4 – AUTO EVENT AI BOT", layout="centered")
+st.set_page_config("🔥 LEVEL 4.5 – AUTO EVENT AI BOT", layout="centered")
 
-st.title("🔥 LEVEL 4 – AUTO EVENT AI BOT")
+st.title("🔥 LEVEL 4.5 – AUTO EVENT AI BOT")
 st.warning("⚠️ Není investiční doporučení")
 
 AUTO = st.checkbox("🤖 AUTO MODE (běží sám)", value=False)
 
 if st.button("🚨 MANUÁLNÍ ANALÝZA") or AUTO:
-    df = level4_scan()
+    df = level45_scan()
 
     if df.empty:
-        st.info("Žádný dostatečně silný event")
+        st.info("📭 Momentálně žádné výrazné geopolitické eventy")
     else:
-        st.subheader("📊 TOP EVENT AKCIE")
+        st.subheader("📊 EVENT-DRIVEN AKCIE")
         st.dataframe(df, use_container_width=True)
 
         msg = (
-            "🔥 *LEVEL 4 EVENT SIGNAL*\n"
+            "🔥 *LEVEL 4.5 EARLY EVENT SIGNAL*\n"
             f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
         )
 
         for _, r in df.iterrows():
             price = yf.Ticker(r["Akcie"]).history(period="1d")["Close"].iloc[-1]
-            tp = round(price * 1.1, 2)
-            sl = round(price * 0.95, 2)
+            tp = round(price * 1.08, 2)
+            sl = round(price * 0.96, 2)
 
             msg += (
                 f"*{r['Akcie']}*\n"
