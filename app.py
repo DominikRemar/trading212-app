@@ -1,15 +1,24 @@
+# ======================
+# IMPORTY
+# ======================
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
 from datetime import datetime
+from transformers import pipeline
 
 # ======================
-# TELEGRAM
+# API KLÍČE (UŽ VLOŽENO)
 # ======================
+NEWS_API_KEY = "bf83b379d110436dbbf648aaff1e5d8e"
+
 TELEGRAM_TOKEN = "8245860410:AAFK59QMTb7r5cY4VcJzqFt46tTh4y45ufM"
 TELEGRAM_CHAT_ID = "7772237988"
 
+# ======================
+# TELEGRAM FUNKCE
+# ======================
 def send_telegram(text):
     try:
         requests.post(
@@ -22,23 +31,79 @@ def send_telegram(text):
             },
             timeout=10
         )
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
 # ======================
-# NASTAVENÍ
+# AI SENTIMENT MODEL
 # ======================
-STOCKS = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AMD","NFLX","INTC"]
-BUDGET_CZK = 5000
+sentiment_ai = pipeline("sentiment-analysis")
 
-MODES = {
-    "Konzervativní 🟢": {"tp":1.06, "sl":0.97, "rsi":(35,55)},
-    "Vyvážený 🟡": {"tp":1.10, "sl":0.95, "rsi":(30,60)},
-    "Agresivní 🔴": {"tp":1.15, "sl":0.92, "rsi":(25,70)},
+# ======================
+# MAPA TÉMAT → AKCIE
+# ======================
+THEME_MAP = {
+    "oil": ["XOM","CVX","SHEL"],
+    "energy": ["XOM","CVX","NEE"],
+    "war": ["LMT","RTX","NOC"],
+    "attack": ["LMT","RTX","NOC"],
+    "defense": ["LMT","RTX","NOC"],
+    "ai": ["NVDA","AMD","MSFT"],
+    "chips": ["NVDA","AMD","TSM"],
+    "banks": ["JPM","GS","BAC"],
+    "crypto": ["COIN","MSTR"],
 }
 
+ALL_STOCKS = sorted(set(sum(THEME_MAP.values(), [])))
+
 # ======================
-# INDIKÁTORY
+# NEWS FETCH + ANALÝZA
+# ======================
+def fetch_news():
+    url = (
+        "https://newsapi.org/v2/top-headlines?"
+        f"language=en&pageSize=15&apiKey={NEWS_API_KEY}"
+    )
+    r = requests.get(url, timeout=10)
+    return r.json().get("articles", [])
+
+def analyze_news():
+    news = fetch_news()
+    signals = []
+
+    for n in news:
+        title = n.get("title", "")
+        if not title:
+            continue
+
+        sentiment = sentiment_ai(title)[0]
+        score = 0
+        topics = []
+
+        text = title.lower()
+        for topic in THEME_MAP:
+            if topic in text:
+                topics.append(topic)
+                score += 25
+
+        if sentiment["label"] == "POSITIVE":
+            score += 10
+        elif sentiment["label"] == "NEGATIVE":
+            score += 5  # krize = bullish pro sektor
+
+        for topic in topics:
+            for stock in THEME_MAP[topic]:
+                signals.append({
+                    "Akcie": stock,
+                    "News skóre": score,
+                    "Téma": topic,
+                    "Zpráva": title
+                })
+
+    return pd.DataFrame(signals)
+
+# ======================
+# TECHNICKÉ INDIKÁTORY
 # ======================
 def compute_rsi(series, period=14):
     delta = series.diff()
@@ -48,16 +113,15 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ======================
-# AI SCAN
+# MARKET SCAN
 # ======================
-def scan_market(mode):
+def scan_market(news_df):
     results = []
 
-    for symbol in STOCKS:
+    for symbol in ALL_STOCKS:
         try:
             stock = yf.Ticker(symbol)
             data = stock.history(period="6mo")
-
             if len(data) < 60:
                 continue
 
@@ -67,88 +131,68 @@ def scan_market(mode):
             ma200 = close.rolling(200).mean().iloc[-1]
             change_30d = ((close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]) * 100
 
-            info = stock.info
-            target = info.get("targetMeanPrice")
-            rec = info.get("recommendationKey")
+            tech_score = 0
+            if price > ma200: tech_score += 25
+            if 30 <= rsi <= 70: tech_score += 20
+            if change_30d > 0: tech_score += 15
 
-            score = 0
-            if price > ma200: score += 25
-            if mode["rsi"][0] <= rsi <= mode["rsi"][1]: score += 20
-            if change_30d > 0: score += 15
-            if target and target > price: score += 20
-            if rec in ["buy","strong_buy"]: score += 20
-            elif rec == "hold": score += 10
+            news_score = 0
+            if not news_df.empty:
+                news_score = news_df[news_df["Akcie"] == symbol]["News skóre"].sum()
+
+            total_score = tech_score + news_score
 
             results.append({
                 "Akcie": symbol,
                 "Cena": round(price,2),
                 "RSI": round(rsi,1),
                 "30d %": round(change_30d,1),
-                "Target": round(target,2) if target else "N/A",
-                "AI skóre": score,
-                "TP": round(price * mode["tp"],2),
-                "SL": round(price * mode["sl"],2),
-                "Trailing SL": round(price * (mode["sl"] + 0.02),2)
+                "Tech skóre": tech_score,
+                "News skóre": news_score,
+                "AI skóre": total_score,
+                "TP": round(price * 1.12,2),
+                "SL": round(price * 0.94,2)
             })
 
         except:
             continue
 
-    return pd.DataFrame(results).sort_values("AI skóre", ascending=False).head(3)
+    return pd.DataFrame(results).sort_values("AI skóre", ascending=False).head(5)
 
 # ======================
-# UI
+# STREAMLIT UI
 # ======================
-st.set_page_config("Trading 212 – AI Asistent", layout="centered")
-st.title("📈 Trading 212 – AI Asistent")
+st.set_page_config("AI NEWS TRADING BOT", layout="centered")
+st.title("🌍📈 AI NEWS TRADING BOT")
 st.warning("⚠️ Není investiční doporučení")
 
-mode_name = st.selectbox("🧠 Vyber obchodní mód", list(MODES.keys()))
+if st.button("🚨 Skenovat svět & trhy"):
+    news_df = analyze_news()
+    market_df = scan_market(news_df)
 
-if st.button("🚀 Skenovat trh"):
-    df = scan_market(MODES[mode_name])
-
-    if df.empty:
-        st.error("❌ Dnes žádné vhodné akcie")
-        send_telegram("❌ Dnes žádné vhodné akcie")
+    if market_df.empty:
+        st.error("❌ Žádné signály")
+        send_telegram("❌ Dnes žádné AI news signály")
         st.stop()
 
-    st.dataframe(df, use_container_width=True)
-
-    budget_per_trade = int(BUDGET_CZK / len(df))
-    best = df["AI skóre"].max()
+    st.subheader("🔥 Akcie reagující na světové události")
+    st.dataframe(market_df, use_container_width=True)
 
     msg = (
-        f"📊 *AI SIGNÁLY – {mode_name}*\n"
-        f"📅 {datetime.now().strftime('%d.%m.%Y')}\n"
-        f"💰 Rozpočet: {BUDGET_CZK} Kč\n"
-        f"➡️ Na akcii: {budget_per_trade} Kč\n"
+        f"🚨 *AI NEWS SIGNÁLY*\n"
+        f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    for i, row in df.iterrows():
-        badge = " ⭐ *BEST*" if row["AI skóre"] == best else ""
-
+    for _, row in market_df.iterrows():
         msg += (
-            f"*{i+1}. {row['Akcie']}*{badge}\n"
-            f"🟢 BUY: `${row['Cena']}`\n"
-            f"🛑 STOP: `${row['SL']}`\n"
-            f"🎯 LIMIT: `${row['TP']}`\n"
-            f"🔒 Trailing SL: `${row['Trailing SL']}`\n"
-            f"📉 RSI: {row['RSI']} | 📊 30d: {row['30d %']}%\n"
-            f"🎯 Target analytiků: {row['Target']}\n"
-            f"🧠 Skóre: {row['AI skóre']}\n"
+            f"*{row['Akcie']}*\n"
+            f"💰 Cena: ${row['Cena']}\n"
+            f"🎯 TP: ${row['TP']}\n"
+            f"🛑 SL: ${row['SL']}\n"
+            f"🧠 Tech: {row['Tech skóre']} | News: {row['News skóre']}\n"
+            f"🔥 AI skóre: {row['AI skóre']}\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
         )
 
-    msg += (
-        "📌 *Jak obchodovat v Trading 212:*\n"
-        "1️⃣ Nakup MARKET\n"
-        "2️⃣ Nastav STOP-LOSS\n"
-        "3️⃣ Nastav LIMIT SELL\n"
-        "4️⃣ Při růstu posouvej STOP (Trailing)\n\n"
-        "⚠️ Není investiční doporučení"
-    )
-
-    if msg.strip():
-        send_telegram(msg)
+    send_telegram(msg)
