@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import time
 from datetime import datetime
 
 # =======================
@@ -22,9 +21,6 @@ STOCK_MAP = {
     "military": ["LMT", "RTX", "NOC"]
 }
 
-AGGRESSIVE_MODE = True
-CHECK_INTERVAL = 300  # 5 minut
-
 # =======================
 # FUNCTIONS
 # =======================
@@ -41,8 +37,7 @@ def send_telegram(message: str):
         pass
 
 def fetch_news():
-    # jednoduchý veřejný zdroj (bez API klíče)
-    url = "https://r.jina.ai/https://news.google.com/rss/search?q=venezuela+usa+oil+attack+war"
+    url = "https://r.jina.ai/https://news.google.com/rss/search?q=venezuela+usa+oil+attack+war+sanctions"
     try:
         r = requests.get(url, timeout=10)
         return r.text.lower()
@@ -56,10 +51,10 @@ def analyze_news(text):
         if kw in text:
             score += 1
             found.append(kw)
-    return score, found
+    return score, list(set(found))
 
 def generate_signal(score, keywords):
-    if score < (2 if AGGRESSIVE_MODE else 4):
+    if score < 2:
         return None
 
     stocks = set()
@@ -71,14 +66,14 @@ def generate_signal(score, keywords):
     if not stocks:
         stocks = {"XOM", "CVX", "SHEL"}
 
-    confidence = min(100, score * 15)
+    confidence = min(100, score * 20)
 
-    msg = f"""🔥 *LEVEL 5 – AUTO EVENT SIGNAL*
+    msg = f"""🔥 *LEVEL 5 – MANUAL EVENT SIGNAL*
 🕒 {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
 📊 *AI skóre:* {score * 100}
 🎯 *Confidence:* {confidence}%
-📰 *Zprávy:* {", ".join(keywords)}
+📰 *Klíčová slova:* {", ".join(keywords)}
 
 📈 *Akcie:* {", ".join(stocks)}
 
@@ -89,42 +84,21 @@ def generate_signal(score, keywords):
 # =======================
 # STREAMLIT UI
 # =======================
-st.set_page_config(page_title="LEVEL 5 AUTO EVENT AI BOT", layout="centered")
-st.title("🔥 LEVEL 5 – AUTO EVENT AI BOT")
+st.set_page_config(page_title="LEVEL 5 – MANUAL EVENT AI BOT", layout="centered")
+st.title("🔥 LEVEL 5 – MANUAL EVENT AI BOT")
 st.warning("Není investiční doporučení")
 
-auto = st.checkbox("🤖 AUTO MODE (běží sám)", value=True)
+st.markdown("👉 Klikni na tlačítko a bot **okamžitě projede světové zprávy**")
 
-status_box = st.empty()
-
-if auto:
-    status_box.info("🟢 Bot běží nonstop a sleduje světové události")
-
-    if "last_run" not in st.session_state:
-        st.session_state.last_run = 0
-
-    now = time.time()
-    if now - st.session_state.last_run > CHECK_INTERVAL:
+if st.button("🚨 SPUSTIT KOMPLETNÍ ANALÝZU"):
+    with st.spinner("Analyzuji geopolitické zprávy..."):
         news = fetch_news()
         score, keywords = analyze_news(news)
         signal = generate_signal(score, keywords)
 
-        if signal:
-            send_telegram(signal)
-            status_box.success("🔥 Silný event detekován – odesláno na Telegram")
-        else:
-            status_box.info("📭 Momentálně žádné výrazné geopolitické eventy")
-
-        st.session_state.last_run = now
-
-else:
-    if st.button("🚨 MANUÁLNÍ ANALÝZA"):
-        news = fetch_news()
-        score, keywords = analyze_news(news)
-        signal = generate_signal(score, keywords)
-
-        if signal:
-            st.success("🔥 EVENT NALEZEN")
-            st.code(signal)
-        else:
-            st.info("📭 Žádný silný event")
+    if signal:
+        send_telegram(signal)
+        st.success("🔥 SILNÝ EVENT NALEZEN – ODESLÁNO NA TELEGRAM")
+        st.code(signal)
+    else:
+        st.info("📭 Momentálně žádné dostatečně silné geopolitické eventy")
