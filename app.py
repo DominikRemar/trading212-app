@@ -1,167 +1,130 @@
 import streamlit as st
-import pandas as pd
 import requests
-import yfinance as yf
-from datetime import datetime
 import time
+from datetime import datetime
 
-# ======================
-# TELEGRAM
-# ======================
+# =======================
+# CONFIG
+# =======================
 TELEGRAM_TOKEN = "8245860410:AAFK59QMTb7r5cY4VcJzqFt46tTh4y45ufM"
 TELEGRAM_CHAT_ID = "7772237988"
 
-def send_telegram(text):
+NEWS_KEYWORDS = [
+    "venezuela", "usa", "attack", "strike", "sanctions",
+    "war", "oil", "pipeline", "military", "conflict",
+    "iran", "middle east", "energy crisis"
+]
+
+STOCK_MAP = {
+    "oil": ["XOM", "CVX", "SHEL"],
+    "energy": ["XOM", "CVX", "SHEL"],
+    "war": ["LMT", "RTX", "NOC"],
+    "military": ["LMT", "RTX", "NOC"]
+}
+
+AGGRESSIVE_MODE = True
+CHECK_INTERVAL = 300  # 5 minut
+
+# =======================
+# FUNCTIONS
+# =======================
+def send_telegram(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
+        requests.post(url, json=payload, timeout=10)
     except:
         pass
 
-# ======================
-# EVENT MAP (LEVEL 4.5)
-# ======================
-EVENT_MAP = {
-    "venezuela": {
-        "keywords": ["venezuela", "caracas"],
-        "stocks": ["XOM", "CVX", "SHEL"],
-        "weight": 120
-    },
-    "war": {
-        "keywords": ["war", "invasion", "military"],
-        "stocks": ["LMT", "RTX", "NOC", "XOM"],
-        "weight": 150
-    },
-    "attack": {
-        "keywords": ["attack", "strike", "explosion", "missile"],
-        "stocks": ["LMT", "RTX", "XOM"],
-        "weight": 100
-    },
-    "sanctions": {
-        "keywords": ["sanctions", "embargo"],
-        "stocks": ["XOM", "CVX", "SHEL"],
-        "weight": 90
-    }
-}
-
-# ======================
-# NEWS FETCH
-# ======================
 def fetch_news():
-    url = "https://newsapi.org/v2/top-headlines"
-    params = {
-        "language": "en",
-        "category": "business",
-        "apiKey": "demo"
-    }
+    # jednoduchý veřejný zdroj (bez API klíče)
+    url = "https://r.jina.ai/https://news.google.com/rss/search?q=venezuela+usa+oil+attack+war"
     try:
-        r = requests.get(url, params=params, timeout=10)
-        return r.json().get("articles", [])
+        r = requests.get(url, timeout=10)
+        return r.text.lower()
     except:
-        return []
+        return ""
 
-# ======================
-# TREND CONFIRMATION (MÍRNĚJŠÍ)
-# ======================
-def trend_ok(symbol):
-    try:
-        data = yf.Ticker(symbol).history(period="2mo")
-        if len(data) < 20:
-            return True
-        ma20 = data["Close"].rolling(20).mean().iloc[-1]
-        price = data["Close"].iloc[-1]
-        return price >= ma20 * 0.98  # povolí i early pohyb
-    except:
-        return True
+def analyze_news(text):
+    score = 0
+    found = []
+    for kw in NEWS_KEYWORDS:
+        if kw in text:
+            score += 1
+            found.append(kw)
+    return score, found
 
-# ======================
-# LEVEL 4.5 SCAN
-# ======================
-def level45_scan():
-    news = fetch_news()
-    hits = []
+def generate_signal(score, keywords):
+    if score < (2 if AGGRESSIVE_MODE else 4):
+        return None
 
-    for n in news:
-        title = (n.get("title") or "").lower()
+    stocks = set()
+    for kw in keywords:
+        for key in STOCK_MAP:
+            if key in kw:
+                stocks.update(STOCK_MAP[key])
 
-        for event, data in EVENT_MAP.items():
-            if any(k in title for k in data["keywords"]):
-                for stock in data["stocks"]:
-                    if trend_ok(stock):
-                        hits.append({
-                            "Akcie": stock,
-                            "Skóre": data["weight"],
-                            "Zpráva": n.get("title")
-                        })
+    if not stocks:
+        stocks = {"XOM", "CVX", "SHEL"}
 
-    if not hits:
-        return pd.DataFrame()
+    confidence = min(100, score * 15)
 
-    df = pd.DataFrame(hits)
+    msg = f"""🔥 *LEVEL 5 – AUTO EVENT SIGNAL*
+🕒 {datetime.now().strftime('%d.%m.%Y %H:%M')}
 
-    result = (
-        df.groupby("Akcie")
-        .agg({
-            "Skóre": "sum",
-            "Zpráva": "count"
-        })
-        .rename(columns={"Zpráva": "Zmínky"})
-        .sort_values("Skóre", ascending=False)
-        .reset_index()
-    )
+📊 *AI skóre:* {score * 100}
+🎯 *Confidence:* {confidence}%
+📰 *Zprávy:* {", ".join(keywords)}
 
-    result["Confidence %"] = (result["Skóre"] / result["Skóre"].max() * 100).round(1)
+📈 *Akcie:* {", ".join(stocks)}
 
-    # 🔓 ODEMKČENO – EARLY EVENTS
-    return result[result["Skóre"] >= 80].head(5)
+⚠️ Není investiční doporučení
+"""
+    return msg
 
-# ======================
+# =======================
 # STREAMLIT UI
-# ======================
-st.set_page_config("🔥 LEVEL 4.5 – AUTO EVENT AI BOT", layout="centered")
+# =======================
+st.set_page_config(page_title="LEVEL 5 AUTO EVENT AI BOT", layout="centered")
+st.title("🔥 LEVEL 5 – AUTO EVENT AI BOT")
+st.warning("Není investiční doporučení")
 
-st.title("🔥 LEVEL 4.5 – AUTO EVENT AI BOT")
-st.warning("⚠️ Není investiční doporučení")
+auto = st.checkbox("🤖 AUTO MODE (běží sám)", value=True)
 
-AUTO = st.checkbox("🤖 AUTO MODE (běží sám)", value=False)
+status_box = st.empty()
 
-if st.button("🚨 MANUÁLNÍ ANALÝZA") or AUTO:
-    df = level45_scan()
+if auto:
+    status_box.info("🟢 Bot běží nonstop a sleduje světové události")
 
-    if df.empty:
-        st.info("📭 Momentálně žádné výrazné geopolitické eventy")
-    else:
-        st.subheader("📊 EVENT-DRIVEN AKCIE")
-        st.dataframe(df, use_container_width=True)
+    if "last_run" not in st.session_state:
+        st.session_state.last_run = 0
 
-        msg = (
-            "🔥 *LEVEL 4.5 EARLY EVENT SIGNAL*\n"
-            f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-        )
+    now = time.time()
+    if now - st.session_state.last_run > CHECK_INTERVAL:
+        news = fetch_news()
+        score, keywords = analyze_news(news)
+        signal = generate_signal(score, keywords)
 
-        for _, r in df.iterrows():
-            price = yf.Ticker(r["Akcie"]).history(period="1d")["Close"].iloc[-1]
-            tp = round(price * 1.08, 2)
-            sl = round(price * 0.96, 2)
+        if signal:
+            send_telegram(signal)
+            status_box.success("🔥 Silný event detekován – odesláno na Telegram")
+        else:
+            status_box.info("📭 Momentálně žádné výrazné geopolitické eventy")
 
-            msg += (
-                f"*{r['Akcie']}*\n"
-                f"💰 Cena: {round(price,2)}\n"
-                f"🎯 TP: {tp}\n"
-                f"🛑 SL: {sl}\n"
-                f"🧠 Skóre: {r['Skóre']}\n"
-                f"🎯 Confidence: {r['Confidence %']}%\n"
-                f"📰 Zmínky: {r['Zmínky']}\n\n"
-            )
+        st.session_state.last_run = now
 
-        send_telegram(msg)
+else:
+    if st.button("🚨 MANUÁLNÍ ANALÝZA"):
+        news = fetch_news()
+        score, keywords = analyze_news(news)
+        signal = generate_signal(score, keywords)
 
-    if AUTO:
-        time.sleep(900)  # 15 minut
+        if signal:
+            st.success("🔥 EVENT NALEZEN")
+            st.code(signal)
+        else:
+            st.info("📭 Žádný silný event")
