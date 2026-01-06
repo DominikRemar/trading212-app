@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 # ======================
 # TELEGRAM
@@ -25,40 +26,40 @@ def send_telegram(text):
         pass
 
 # ======================
-# EVENT MAP (MOZEK)
+# EVENT MAP – LEVEL 4
 # ======================
 EVENT_MAP = {
     "venezuela": {
         "keywords": ["venezuela", "caracas"],
         "stocks": ["XOM", "CVX", "SHEL"],
-        "weight": 100
-    },
-    "attack": {
-        "keywords": ["attack", "strike", "explosion", "missile"],
-        "stocks": ["LMT", "RTX", "XOM"],
-        "weight": 80
+        "weight": 120
     },
     "war": {
         "keywords": ["war", "invasion", "military"],
         "stocks": ["LMT", "RTX", "NOC", "XOM"],
-        "weight": 120
+        "weight": 150
+    },
+    "attack": {
+        "keywords": ["attack", "strike", "explosion", "missile"],
+        "stocks": ["LMT", "RTX", "XOM"],
+        "weight": 100
     },
     "sanctions": {
         "keywords": ["sanctions", "embargo"],
         "stocks": ["XOM", "CVX", "SHEL"],
-        "weight": 70
+        "weight": 90
     }
 }
 
 # ======================
-# NEWS FETCH
+# NEWS FETCH (STABLE)
 # ======================
 def fetch_news():
     url = "https://newsapi.org/v2/top-headlines"
     params = {
         "language": "en",
         "category": "business",
-        "apiKey": "demo"  # funguje omezeně, ale stabilně
+        "apiKey": "demo"
     }
     try:
         r = requests.get(url, params=params, timeout=10)
@@ -67,9 +68,23 @@ def fetch_news():
         return []
 
 # ======================
-# EVENT ANALYSIS
+# TREND CONFIRMATION
 # ======================
-def event_scan():
+def trend_ok(symbol):
+    try:
+        data = yf.Ticker(symbol).history(period="3mo")
+        if len(data) < 30:
+            return False
+        ma20 = data["Close"].rolling(20).mean().iloc[-1]
+        price = data["Close"].iloc[-1]
+        return price > ma20
+    except:
+        return False
+
+# ======================
+# LEVEL 4 EVENT SCAN
+# ======================
+def level4_scan():
     news = fetch_news()
     hits = []
 
@@ -79,11 +94,12 @@ def event_scan():
         for event, data in EVENT_MAP.items():
             if any(k in title for k in data["keywords"]):
                 for stock in data["stocks"]:
-                    hits.append({
-                        "Akcie": stock,
-                        "Skóre": data["weight"],
-                        "Zpráva": n.get("title")
-                    })
+                    if trend_ok(stock):
+                        hits.append({
+                            "Akcie": stock,
+                            "Skóre": data["weight"],
+                            "Zpráva": n.get("title")
+                        })
 
     if not hits:
         return pd.DataFrame()
@@ -102,36 +118,48 @@ def event_scan():
     )
 
     result["Confidence %"] = (result["Skóre"] / result["Skóre"].max() * 100).round(1)
-    return result.head(5)
+    return result[result["Skóre"] >= 150].head(3)
 
 # ======================
 # STREAMLIT UI
 # ======================
-st.set_page_config("🔥 LEVEL 3 – EVENT DRIVEN AI BOT", layout="centered")
+st.set_page_config("🔥 LEVEL 4 – AUTO EVENT AI BOT", layout="centered")
 
-st.title("🔥 LEVEL 3 – EVENT DRIVEN AI BOT")
+st.title("🔥 LEVEL 4 – AUTO EVENT AI BOT")
 st.warning("⚠️ Není investiční doporučení")
 
-if st.button("🚨 ANALYZOVAT SVĚTOVÉ UDÁLOSTI"):
-    df = event_scan()
+AUTO = st.checkbox("🤖 AUTO MODE (běží sám)", value=False)
+
+if st.button("🚨 MANUÁLNÍ ANALÝZA") or AUTO:
+    df = level4_scan()
 
     if df.empty:
-        st.error("Žádné silné geopolitické události")
+        st.info("Žádný dostatečně silný event")
     else:
-        st.subheader("📊 Nejpravděpodobnější akcie")
+        st.subheader("📊 TOP EVENT AKCIE")
         st.dataframe(df, use_container_width=True)
 
         msg = (
-            "🔥 *LEVEL 3 EVENT SIGNAL*\n"
+            "🔥 *LEVEL 4 EVENT SIGNAL*\n"
             f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
         )
 
         for _, r in df.iterrows():
+            price = yf.Ticker(r["Akcie"]).history(period="1d")["Close"].iloc[-1]
+            tp = round(price * 1.1, 2)
+            sl = round(price * 0.95, 2)
+
             msg += (
                 f"*{r['Akcie']}*\n"
-                f"🧠 AI skóre: {r['Skóre']}\n"
+                f"💰 Cena: {round(price,2)}\n"
+                f"🎯 TP: {tp}\n"
+                f"🛑 SL: {sl}\n"
+                f"🧠 Skóre: {r['Skóre']}\n"
                 f"🎯 Confidence: {r['Confidence %']}%\n"
                 f"📰 Zmínky: {r['Zmínky']}\n\n"
             )
 
         send_telegram(msg)
+
+    if AUTO:
+        time.sleep(900)  # 15 minut
